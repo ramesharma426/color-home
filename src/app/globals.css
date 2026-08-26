@@ -1,3 +1,81 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --proof: #cdcdcd;
+    --chalk: #f7f7f7;
+    --graphite: #1a1a1a;
+    --skylight: #3b5578;
+    --sun: #e8a93c;
+    --signal: #c1272d;
+  }
+
+  body {
+    background-color: var(--proof);
+    color: var(--graphite);
+  }
+
+  ::selection {
+    background-color: var(--skylight);
+    color: var(--chalk);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--graphite);
+    outline-offset: 2px;
+  }
+
+  /* The colour input is a native control; give it a frame that matches the
+     rest of the chip grid instead of the browser default chrome. */
+  input[type="color"] {
+    padding: 0;
+    border: 1px solid var(--graphite);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+  }
+
+  input[type="color"]::-webkit-color-swatch {
+    border: none;
+  }
+}
+
+@layer components {
+  /* Eyebrows / data labels: the vernacular of a paint spec card. */
+  .label-mono {
+    @apply font-mono text-[0.6875rem] uppercase tracking-[0.18em];
+  }
+
+  /* Page-load sequence for the signature value ramp: steps arrive from
+     shadow to sun, once, and never for readers who ask for less motion. */
+  .ramp-step {
+    animation: ramp-in 620ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+
+  @keyframes ramp-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

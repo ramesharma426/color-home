@@ -18,9 +18,10 @@ export function DownloadButton({
     <button
       type="button"
       onClick={handleDownload}
-      className="w-full rounded-lg bg-slate-900 px-4 py-2 text-white"
+      className="flex w-full items-center justify-center gap-3 bg-graphite px-5 py-4 font-display text-sm font-bold uppercase tracking-[0.08em] text-chalk transition-colors hover:bg-skylight"
     >
       Download result
+      <span aria-hidden="true">↓</span>
     </button>
   );
 }

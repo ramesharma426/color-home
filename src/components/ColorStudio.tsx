@@ -97,30 +97,44 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
   useEffect(render, [regions]);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-3">
-      <div className="lg:col-span-2">
-        <label className="mb-2 block text-sm text-slate-600">
-          Sensitivity: {tolerance}
-          <input
-            type="range"
-            min={5}
-            max={80}
-            value={tolerance}
-            onChange={(event) => setTolerance(Number(event.target.value))}
-            className="ml-3 align-middle"
-          />
-        </label>
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
+      <div className="self-start border border-hairline-strong/60 bg-chalk p-3 sm:p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-1">
+          <p className="label-mono text-skylight">Step 2 of 3 — click a surface</p>
+          <label className="label-mono flex items-center gap-3 text-graphite/60">
+            <span>Sensitivity</span>
+            <input
+              type="range"
+              min={5}
+              max={80}
+              value={tolerance}
+              onChange={(event) => setTolerance(Number(event.target.value))}
+              className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+            />
+            <span className="w-6 tabular-nums text-graphite">{tolerance}</span>
+          </label>
+        </div>
         <canvas
           ref={canvasRef}
           onClick={handleCanvasClick}
-          className="w-full cursor-crosshair rounded-xl border border-slate-200"
+          className="block w-full cursor-crosshair border border-hairline"
         />
       </div>
-      <div className="space-y-6">
-        <RegionList regions={regions} activeRegionId={activeRegionId} onSelectRegion={setActiveRegionId} />
-        <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+      <aside className="space-y-8">
+        <section>
+          <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
+            Selected surfaces
+          </h2>
+          <RegionList regions={regions} activeRegionId={activeRegionId} onSelectRegion={setActiveRegionId} />
+        </section>
+        <section>
+          <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
+            Step 3 of 3 — choose a color
+          </h2>
+          <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+        </section>
         <DownloadButton canvasRef={canvasRef} />
-      </div>
+      </aside>
     </div>
   );
 }
