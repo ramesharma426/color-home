@@ -904,7 +904,7 @@ git commit -m "feat: add image downscale-dimension helper with tests"
 - Produces: a `useCanvasWorker()` React hook exposing `runFloodFill(buffer, seedX, seedY, tolerance): Promise<Uint8Array>` and `runRecolor(buffer, mask, color): Promise<PixelBuffer>`. Consumed by Task 9 (`ColorStudio`).
 - Message contract (worker.ts <-> useCanvasWorker.ts): requests are `{ id: string; type: "floodFill"; buffer; seedX; seedY; tolerance }` or `{ id: string; type: "recolor"; buffer; mask; targetColor }`; responses are `{ id: string; type: "floodFillResult"; mask }` or `{ id: string; type: "recolorResult"; buffer }`.
 
-This task has no unit tests: Web Workers require a browser-like environment that Vitest's `node` environment doesn't provide, and the logic being wrapped (`floodFill`, `recolor`) is already covered by Tasks 4-5. Correctness of the worker wiring itself is verified manually in Task 9 (visually, via the running dev server) and by the Task 20 Playwright test, which exercises the whole flow in a real browser.
+This task has no unit tests: Web Workers require a browser-like environment that Vitest's `node` environment doesn't provide, and the logic being wrapped (`floodFill`, `recolor`) is already covered by Tasks 4-5. Correctness of the worker wiring itself is verified manually in Task 9 (visually, via the running dev server) and by the Task 22 Playwright test, which exercises the whole flow in a real browser.
 
 - [ ] **Step 1: Write `src/lib/canvas/worker.ts`**
 
@@ -2159,7 +2159,296 @@ git commit -m "feat: support dragging a swatch directly onto a region"
 
 ---
 
-### Task 20: End-to-end test with Playwright
+### Task 20: Dictionary infrastructure — extract all UI strings to English
+
+**Added per explicit owner feedback (2026-08-27):** "i also want nepali language switcher" — clarified via follow-up question: same pattern as the owner's other project (building-care-enterprises), which renders every page twice (English at `/`, Nepali at `/ne/...`) via separate dictionaries and a `getDictionary(locale)` lookup, not a client-side text-swap. This task is the first half: extract every hardcoded English string in the app into a typed dictionary, with zero visible change to the English site — a pure refactor, verified by the existing test suite and byte-for-byte content checks. Task 21 adds the actual Nepali translations and the `/ne` routes on top of this.
+
+**Files:**
+- Create: `src/dictionaries/types.ts`
+- Create: `src/dictionaries/en.ts`
+- Create: `src/lib/dictionary.ts`
+- Modify: `src/app/page.tsx`, `src/app/studio/page.tsx`, `src/app/colors/page.tsx`
+- Modify: `src/components/SiteNav.tsx`, `src/components/PhotoUploader.tsx`, `src/components/ColorStudio.tsx`, `src/components/RegionList.tsx`, `src/components/PaletteBrowser.tsx`, `src/components/DownloadButton.tsx`
+
+**Interfaces:**
+- Produces: `type Locale = "en" | "ne"`; a `Dictionary` interface covering every user-facing string in the app; `getDictionary(locale: Locale): Dictionary`. Consumed by every page/component listed above, and by Task 21's Nepali routes.
+
+This task does NOT create any Nepali content or routes — `ne.ts` doesn't exist yet. The only behavior change allowed is *how* strings reach the DOM (dictionary lookup instead of a literal in JSX); the *rendered English text must be identical* to what's live today.
+
+- [ ] **Step 1: Inventory every current user-facing string**
+
+Read the current content of `src/app/page.tsx`, `src/app/studio/page.tsx`, `src/app/colors/page.tsx`, and every file under `src/components/` (`SiteNav.tsx`, `PhotoUploader.tsx`, `ColorStudio.tsx`, `RegionList.tsx`, `PaletteBrowser.tsx`, `DownloadButton.tsx`). List every literal string a visitor would read: headings, body copy, button labels, placeholder/empty-state text, error messages, the two disclaimers (Studio's "screens vs paint" explanation, the Berger-estimate caveat), aria-labels/titles that carry real words (not decorative). This inventory becomes the dictionary's key list — do not skip anything, including short strings like button labels or a checkbox's label text.
+
+- [ ] **Step 2: Design and write `src/dictionaries/types.ts`**
+
+Group keys by the page/component they belong to, following this shape (extend it with whatever additional keys your inventory from Step 1 turns up — this is a minimum, not an exact final list):
+
+```ts
+export type Locale = "en" | "ne";
+
+export interface Dictionary {
+  nav: {
+    studioLink: string;
+    colorsLink: string;
+    switchLanguageLabel: string; // e.g. the text/label for the language switcher link itself
+  };
+  landing: {
+    // one key per distinct heading/paragraph/button on the current landing page —
+    // name them for what they are (heroTitle, heroSubtitle, ctaPrimary, ctaSecondary,
+    // stepOneTitle, stepOneBody, ... etc.), matching your Step 1 inventory exactly.
+    [key: string]: string;
+  };
+  studio: {
+    pageTitle: string;
+    disclaimer: string; // the full "screens vs paint" paragraph, verbatim
+    uploaderDragText: string;
+    uploaderButtonText: string;
+    uploaderErrorNotImage: string;
+    uploaderErrorDecodeFailed: string;
+    sensitivityLabel: string;
+    regionsEmptyState: string;
+    borderCheckboxLabel: string;
+    downloadButtonLabel: string;
+    // add any further keys your inventory finds in ColorStudio.tsx/RegionList.tsx/PaletteBrowser.tsx
+    [key: string]: string;
+  };
+  colors: {
+    pageTitle: string;
+    caveat: string;
+    categoryFacade: string;
+    categoryTrim: string;
+    categoryRoof: string;
+  };
+}
+```
+
+(The `[key: string]: string` index signatures are a scaffold for this step only — by Step 3 every key actually used should be explicitly named in the interface, not left as an untyped catch-all. Remove the index signatures once the real key list is final, so TypeScript actually catches a missing key in `ne.ts` later in Task 21.)
+
+- [ ] **Step 3: Write `src/dictionaries/en.ts`**
+
+```ts
+import type { Dictionary } from "./types";
+
+export const en: Dictionary = {
+  // populated key-by-key from your Step 1 inventory — every value here must be
+  // the EXACT current text from the live components/pages, verbatim, not a
+  // paraphrase.
+};
+```
+
+- [ ] **Step 4: Write `src/lib/dictionary.ts`**
+
+```ts
+import { en } from "@/dictionaries/en";
+import type { Dictionary, Locale } from "@/dictionaries/types";
+
+const dictionaries: Partial<Record<Locale, Dictionary>> = { en };
+
+export function getDictionary(locale: Locale): Dictionary {
+  const dict = dictionaries[locale];
+  if (!dict) {
+    throw new Error(`No dictionary registered for locale "${locale}"`);
+  }
+  return dict;
+}
+```
+
+(`Partial<Record<...>>` and the runtime check are deliberate — `ne` doesn't exist until Task 21, and this must not silently pretend it does.)
+
+- [ ] **Step 5: Wire every page and component to read from the dictionary**
+
+For each file in the Files list, replace every literal string identified in Step 1 with a lookup into a `dict: Dictionary` value. Concrete worked example — before:
+
+```tsx
+// src/components/DownloadButton.tsx (before)
+export function DownloadButton({ canvasRef }: { canvasRef: React.RefObject<HTMLCanvasElement | null> }) {
+  // ...
+  return (
+    <button type="button" onClick={handleDownload} className="...">
+      Download result
+    </button>
+  );
+}
+```
+
+after:
+
+```tsx
+// src/components/DownloadButton.tsx (after)
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
+
+export function DownloadButton({
+  canvasRef,
+  locale,
+}: {
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  locale: Locale;
+}) {
+  const dict = getDictionary(locale);
+  // ...
+  return (
+    <button type="button" onClick={handleDownload} className="...">
+      {dict.studio.downloadButtonLabel}
+    </button>
+  );
+}
+```
+
+Every component in the Files list gains a `locale: Locale` prop the same way (components that are rendered by `ColorStudio` — `RegionList`, `PaletteBrowser`, `DownloadButton` — receive it as a prop from `ColorStudio`, which itself receives it from the Studio page). Pages (`src/app/page.tsx`, `src/app/studio/page.tsx`, `src/app/colors/page.tsx`) call `getDictionary("en")` directly for now (hardcoded — Task 21 makes this locale-driven by the route).
+
+**Do not change any Tailwind classes, layout, or component logic in this task** — this is a strings-only refactor. If you find yourself wanting to touch anything else, stop and note it in your report instead.
+
+- [ ] **Step 6: Verify zero visible change**
+
+Run: `npm test` — must still be the same pass count as before this task (26 tests as of Task 18), unmodified.
+Run: `npx tsc --noEmit` — no errors.
+With the dev server running (do NOT run `npm run build`), `curl` all three routes (`/`, `/studio`, `/colors`) before and after your changes are live and diff the extracted visible text — it must be identical. The fastest way: `curl -s http://localhost:3000/ | grep -oE '>[^<]+<' | grep -v '^><$'` (rough text-node extraction) before starting Step 5 and again after, and confirm the two outputs match aside from any Next.js build-id/hash noise.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/dictionaries/ src/lib/dictionary.ts src/app/page.tsx src/app/studio/page.tsx src/app/colors/page.tsx src/components/SiteNav.tsx src/components/PhotoUploader.tsx src/components/ColorStudio.tsx src/components/RegionList.tsx src/components/PaletteBrowser.tsx src/components/DownloadButton.tsx
+git commit -m "refactor: extract all UI strings into an English dictionary"
+```
+
+---
+
+### Task 21: Nepali translations, /ne routes, and the language switcher
+
+**Files:**
+- Create: `src/dictionaries/ne.ts`
+- Create: `src/lib/paths.ts`
+- Create: `src/app/ne/layout.tsx`, `src/app/ne/page.tsx`, `src/app/ne/studio/page.tsx`, `src/app/ne/colors/page.tsx`
+- Modify: `src/components/SiteNav.tsx` (add the working switcher link)
+
+**Interfaces:**
+- Consumes: `Dictionary`/`Locale`/`getDictionary` (Task 20).
+- Produces: `localeHref(locale: Locale, path: string): string` — e.g. `localeHref("ne", "/studio")` → `/ne/studio`, `localeHref("en", "/studio")` → `/studio`.
+
+**Translation content:** the controller will supply the exact Nepali text for every key in `en.ts` once Task 20's dictionary exists and its final key list is known — this cannot be written into the plan in advance since Task 20's Step 1 inventory determines the exact keys. Translation conventions to follow (matching the owner's other bilingual project, `building-care-enterprises`): the brand name "Color Home" stays untranslated in Nepali text; Berger color names (e.g. "Long Beach", "Signal Red") stay untranslated/unchanged, since they're product names printed on the physical swatch card; product codes (e.g. "2T 0669") are never translated or reformatted.
+
+- [ ] **Step 1: Write `src/lib/paths.ts`**
+
+```ts
+import type { Locale } from "@/dictionaries/types";
+
+export function localeHref(locale: Locale, path: string): string {
+  return locale === "ne" ? `/ne${path}` : path;
+}
+```
+
+- [ ] **Step 2: Write `src/dictionaries/ne.ts`**
+
+Using the exact key list from `src/dictionaries/en.ts` (Task 20) and the Nepali text the controller provides (see the task dispatch for the actual strings — do not invent translations yourself if exact text was provided; only translate a key yourself if the dispatch explicitly says a key was missed and asks you to). TypeScript's `Dictionary` interface will fail to compile if any key is missing — that's the mechanism that guarantees full coverage, so if `npx tsc --noEmit` is clean, every key exists.
+
+```ts
+import type { Dictionary } from "./types";
+
+export const ne: Dictionary = {
+  // every key from en.ts, translated
+};
+```
+
+Register it in `src/lib/dictionary.ts`:
+
+```ts
+import { ne } from "@/dictionaries/ne";
+// ...
+const dictionaries: Partial<Record<Locale, Dictionary>> = { en, ne };
+```
+
+- [ ] **Step 3: Create the Nepali layout**
+
+```tsx
+// src/app/ne/layout.tsx
+import type { Metadata } from "next";
+import "../globals.css";
+
+export const metadata: Metadata = {
+  title: "Color Home",
+  description: "आफ्नो घरको फोटोमा नै पेन्टको रङ हेर्नुहोस्, किन्नुअघि।",
+};
+
+export default function NepaliLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="ne">
+      <body className="bg-chalk text-graphite antialiased">{children}</body>
+    </html>
+  );
+}
+```
+
+(Match whatever body classes/font setup Task 15 actually left in the root `src/app/layout.tsx` — copy them here rather than the placeholder shown, since Task 15 landed after this plan text was written and this file must stay visually identical to the English layout, just with `lang="ne"`.)
+
+- [ ] **Step 4: Create the three Nepali pages as thin locale wrappers**
+
+Each Nepali page renders exactly the same JSX tree as its English counterpart, with `getDictionary("ne")` instead of `getDictionary("en")` and `locale="ne"` passed down to every component that needs it. Concrete pattern for `src/app/ne/studio/page.tsx` (mirror this same pattern for `src/app/ne/page.tsx` and `src/app/ne/colors/page.tsx` against their English counterparts):
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { PhotoUploader } from "@/components/PhotoUploader";
+import { ColorStudio } from "@/components/ColorStudio";
+import { getDictionary } from "@/lib/dictionary";
+
+export default function NepaliStudioPage() {
+  const [photo, setPhoto] = useState<ImageBitmap | null>(null);
+  const dict = getDictionary("ne");
+
+  return (
+    <main className="mx-auto max-w-5xl p-6">
+      <h1 className="mb-6 text-2xl font-semibold">{dict.studio.pageTitle}</h1>
+      <p className="mb-6 text-sm text-graphite/70">{dict.studio.disclaimer}</p>
+      {photo ? (
+        <ColorStudio photo={photo} locale="ne" />
+      ) : (
+        <PhotoUploader onPhotoReady={setPhoto} locale="ne" />
+      )}
+    </main>
+  );
+}
+```
+
+Adjust the exact JSX structure/classNames to match whatever Task 15 and Task 18 actually left in `src/app/studio/page.tsx` at the time you do this work — read that file first and mirror its real current structure, not the illustrative sketch above.
+
+- [ ] **Step 5: Add the working language switcher to `SiteNav.tsx`**
+
+The switcher must link to the *equivalent* page in the other language, not always back to the homepage — e.g. from `/studio` it links to `/ne/studio`, from `/ne/colors` it links to `/colors`. Use `usePathname()` (Next.js client hook) to get the current path, strip a leading `/ne` if present to get the "base path," then build both hrefs with `localeHref`:
+
+```tsx
+"use client";
+import { usePathname } from "next/navigation";
+import { localeHref } from "@/lib/paths";
+import type { Locale } from "@/dictionaries/types";
+
+// inside SiteNav, given the component already receives `locale: Locale`:
+const pathname = usePathname();
+const basePath = pathname.startsWith("/ne") ? pathname.slice(3) || "/" : pathname;
+const otherLocale: Locale = locale === "en" ? "ne" : "en";
+const switchHref = localeHref(otherLocale, basePath);
+// render: <Link href={switchHref}>{dict.nav.switchLanguageLabel}</Link>
+```
+
+- [ ] **Step 6: Manual verification**
+
+With the dev server running, `curl http://localhost:3000/ne`, `/ne/studio`, `/ne/colors` — confirm 200 and Nepali text present (not English). Confirm `/`, `/studio`, `/colors` are completely unchanged from before this task (still English, same content as Task 20 left them). Trace the switcher logic by hand for at least the `/studio` ↔ `/ne/studio` case.
+
+- [ ] **Step 7: Verify the static build succeeds with the new routes**
+
+Stop first if a dev server is running in this checkout (do not run `npm run build` alongside it — see this project's established `.next`-collision caution); if you can't safely stop it yourself, skip this step and say so in your report rather than risking the collision — the controller will run this check separately.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/dictionaries/ne.ts src/lib/dictionary.ts src/lib/paths.ts src/app/ne/ src/components/SiteNav.tsx
+git commit -m "feat: add Nepali translations, /ne routes, and language switcher"
+```
+
+---
+
+### Task 22: End-to-end test with Playwright
 
 **Files:**
 - Create: `playwright.config.ts`
@@ -2277,5 +2566,5 @@ git commit -m "test: add end-to-end coverage for the upload-to-download flow"
 
 - **Spec coverage:** landing/Studio/Colors pages (Tasks 13-15), flood fill + lightness-preserving recolor (Tasks 4-5), multi-region support (Task 9's `regions` array), Berger palette + free picker (Tasks 3, 11), download-only output (Task 12), downscaling large photos (Task 6, wired in Task 8), Web Worker with the constraint that pixel math must stay DOM-free (Tasks 2, 4, 5, 7), GitHub Pages deploy (Task 16), unit + E2E testing strategy (Tasks 2-6, 17) — all covered.
 - **Type consistency:** `PixelBuffer`/`RGBColor` (Task 2) used identically through Tasks 4, 5, 7, 8, 9. `Region` is defined once in Task 9 and imported by Task 10, with the `recoloredData` field called out explicitly to avoid a Task 9/Task 10 mismatch. Worker message `type` strings (`floodFill`/`floodFillResult`/`recolor`/`recolorResult`) match between Task 7's `worker.ts` and `useCanvasWorker.ts`.
-- **No placeholders:** the one deliberately deferred item (a hand-authored PNG fixture in Task 20) was replaced with a concrete in-browser generation approach rather than left as a TODO.
-- **Post-launch additions (2026-08-27):** Tasks 17-19 (border mask helper, border UI wiring, drag-and-drop swatch-to-region) were added after Tasks 1-16 were already implemented and reviewed, per explicit owner feedback during that work. They follow the same file-structure and task-right-sizing conventions as the original plan and were inserted before the Playwright task (now Task 20) so the e2e coverage lands after the full feature set exists.
+- **No placeholders:** the one deliberately deferred item (a hand-authored PNG fixture in Task 22) was replaced with a concrete in-browser generation approach rather than left as a TODO.
+- **Post-launch additions (2026-08-27):** Tasks 17-21 (border mask helper, border UI wiring, drag-and-drop swatch-to-region, dictionary extraction, Nepali translations + /ne routes + switcher) were added after Tasks 1-16 were already implemented and reviewed, per explicit owner feedback during that work. They follow the same file-structure and task-right-sizing conventions as the original plan and were inserted before the Playwright task (now Task 22) so the e2e coverage lands after the full feature set exists. Task 21's Nepali translation content is intentionally not pre-written into the plan text — it depends on Task 20's exact key inventory, which didn't exist when this plan section was authored — the controller supplies the actual Nepali strings at Task 21's dispatch time.
