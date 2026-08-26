@@ -1027,7 +1027,14 @@ export function useCanvasWorker() {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Verify the static build still bundles the worker**
+
+The `new Worker(new URL("./worker.ts", import.meta.url))` pattern needs to survive Next's static-export bundling — this can't wait for Task 9's manual test, since a bundler failure here should be caught at the source.
+
+Run: `npm run build`
+Expected: build succeeds with no errors about `Worker`, `import.meta.url`, or resolving `./worker.ts`. If it fails, this is a real blocker for this task, not something to defer — Next.js may need `next.config.mjs` adjusted (e.g. confirming the default webpack build, not Turbopack, handles `new URL(..., import.meta.url)` workers; consult current Next.js docs for the installed version if this fails, since worker-bundling support has changed across versions).
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/lib/canvas/worker.ts src/lib/canvas/useCanvasWorker.ts
@@ -1138,7 +1145,9 @@ git commit -m "feat: add photo upload/capture component"
 
 **Interfaces:**
 - Consumes: `useCanvasWorker` (Task 7), `PixelBuffer`/`RGBColor` (Task 2).
-- Produces: `imageBitmapToBuffer(bitmap: ImageBitmap): PixelBuffer`; `Region { id: string; mask: Uint8Array; color: RGBColor | null; label: string }`; `<ColorStudio photo={ImageBitmap} />` which internally renders the canvas, owns `regions: Region[]`, and renders `RegionList` (Task 10) and `PaletteBrowser` (Task 11) once those exist. Consumed by Task 13 (Studio page).
+- Produces: `imageBitmapToBuffer(bitmap: ImageBitmap): PixelBuffer`; `Region { id: string; mask: Uint8Array; color: RGBColor | null; label: string; recoloredData?: Uint8ClampedArray }`; `<ColorStudio photo={ImageBitmap} />` which owns the canvas, click-to-wand handling, and `regions: Region[]` state.
+
+**Sequencing note:** `RegionList` (Task 10) and `PaletteBrowser` (Task 11) do not exist yet when this task runs — Task 9 is dispatched before them. This task therefore renders a minimal inline placeholder sidebar instead of importing those components; Task 12 (dispatched last of the three) wires all three into `ColorStudio.tsx` once they all exist. Do not import `./RegionList`, `./PaletteBrowser`, or `./DownloadButton` in this task — those modules do not exist on disk yet and the build will fail.
 
 - [ ] **Step 1: Write `src/lib/canvas/imageBitmapToBuffer.ts`**
 
@@ -1168,15 +1177,13 @@ import { useEffect, useRef, useState } from "react";
 import { useCanvasWorker } from "@/lib/canvas/useCanvasWorker";
 import { imageBitmapToBuffer } from "@/lib/canvas/imageBitmapToBuffer";
 import type { PixelBuffer, RGBColor } from "@/lib/canvas/types";
-import { RegionList } from "./RegionList";
-import { PaletteBrowser } from "./PaletteBrowser";
-import { DownloadButton } from "./DownloadButton";
 
 export interface Region {
   id: string;
   mask: Uint8Array;
   color: RGBColor | null;
   label: string;
+  recoloredData?: Uint8ClampedArray;
 }
 
 const DEFAULT_TOLERANCE = 24;
@@ -1206,10 +1213,21 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let composed = new Uint8ClampedArray(baseBuffer.data);
+    // Composite each region's recolored pixels over the base photo, one
+    // mask at a time, so multiple regions with different colors coexist —
+    // do NOT replace the whole buffer with the last region's recoloredData,
+    // that would discard every earlier region.
+    const composed = new Uint8ClampedArray(baseBuffer.data);
     for (const region of regions) {
       if (!region.recoloredData) continue;
-      composed = region.recoloredData;
+      for (let pixelIndex = 0; pixelIndex < region.mask.length; pixelIndex++) {
+        if (!region.mask[pixelIndex]) continue;
+        const offset = pixelIndex * 4;
+        composed[offset] = region.recoloredData[offset];
+        composed[offset + 1] = region.recoloredData[offset + 1];
+        composed[offset + 2] = region.recoloredData[offset + 2];
+        composed[offset + 3] = region.recoloredData[offset + 3];
+      }
     }
     ctx.putImageData(new ImageData(composed, baseBuffer.width, baseBuffer.height), 0, 0);
   }
@@ -1269,20 +1287,39 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
         />
       </div>
       <div className="space-y-6">
-        <RegionList regions={regions} activeRegionId={activeRegionId} onSelectRegion={setActiveRegionId} />
-        <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
-        <DownloadButton canvasRef={canvasRef} />
+        {/* Temporary placeholder — Task 12 replaces this with RegionList,
+            PaletteBrowser, and DownloadButton once all three exist. */}
+        <ul className="text-sm text-slate-600">
+          {regions.map((region) => (
+            <li key={region.id}>
+              <button type="button" onClick={() => setActiveRegionId(region.id)}>
+                {region.label}
+                {region.id === activeRegionId ? " (active)" : ""}
+              </button>
+            </li>
+          ))}
+        </ul>
+        {activeRegionId && (
+          <input
+            type="color"
+            onChange={(event) => {
+              const hex = event.target.value;
+              const r = parseInt(hex.slice(1, 3), 16);
+              const g = parseInt(hex.slice(3, 5), 16);
+              const b = parseInt(hex.slice(5, 7), 16);
+              handleColorSelect({ r, g, b });
+            }}
+          />
+        )}
       </div>
     </div>
   );
 }
 ```
 
-**Note for the implementer:** `Region` above is extended at runtime with a `recoloredData: Uint8ClampedArray` field once a color has been assigned; add that as an optional field (`recoloredData?: Uint8ClampedArray`) on the `Region` interface so TypeScript accepts it — do this in the same step, it's not a separate task.
-
 - [ ] **Step 3: Manual verification**
 
-Run: `npm run dev`, mount `<ColorStudio photo={bitmap}>` behind a temporary `<PhotoUploader>` in `src/app/page.tsx`, upload a photo of a wall, click on it, confirm a region appears in the list, pick a color, confirm the canvas updates with a plausible recolor (not a flat fill — shadows/texture should still show through).
+Run: `npm run dev`, mount `<ColorStudio photo={bitmap}>` behind a temporary `<PhotoUploader>` in `src/app/page.tsx`, upload a photo with at least two distinguishable flat-ish color areas, click the first area, pick a color via the placeholder color input, confirm it recolors; click a second, disconnected area, pick a *different* color, and confirm **both** regions show their own recolor at once (this is the check that catches a compositing bug where a later region's recolor would wipe out an earlier one). Confirm shadows/texture still show through the recolor rather than a flat fill.
 
 - [ ] **Step 4: Commit**
 
@@ -1300,7 +1337,7 @@ git commit -m "feat: add ColorStudio canvas with click-to-wand region selection"
 
 **Interfaces:**
 - Consumes: `Region` type (Task 9).
-- Produces: `<RegionList regions={Region[]} activeRegionId={string | null} onSelectRegion={(id: string) => void} />`. Consumed by Task 9.
+- Produces: `<RegionList regions={Region[]} activeRegionId={string | null} onSelectRegion={(id: string) => void} />`. Wired into `ColorStudio.tsx` by Task 12 (not Task 9 itself — Task 9 runs before this task exists).
 
 - [ ] **Step 1: Write `src/components/RegionList.tsx`**
 
@@ -1367,7 +1404,7 @@ git commit -m "feat: add region list sidebar"
 
 **Interfaces:**
 - Consumes: `bergerYellowsOranges` (Task 3), `hexToRgb` (Task 2).
-- Produces: `<PaletteBrowser onSelect={(color: RGBColor) => void} disabled={boolean} />`. Consumed by Task 9 and Task 14.
+- Produces: `<PaletteBrowser onSelect={(color: RGBColor) => void} disabled={boolean} />`. Wired into `ColorStudio.tsx` by Task 12 (not Task 9 itself — Task 9 runs before this task exists). Task 14 (Colors page) does not reuse this component — it renders the palette data directly.
 
 - [ ] **Step 1: Write `src/components/PaletteBrowser.tsx`**
 
@@ -1449,7 +1486,8 @@ git commit -m "feat: add palette browser with Berger swatches and free picker"
 
 **Interfaces:**
 - Consumes: a ref to the canvas already rendered by `ColorStudio` (Task 9).
-- Produces: `<DownloadButton canvasRef={React.RefObject<HTMLCanvasElement>} />`. Consumed by Task 9.
+- Produces: `<DownloadButton canvasRef={React.RefObject<HTMLCanvasElement>} />`.
+- Also modifies: `src/components/ColorStudio.tsx` (Task 9) — this task is the one that wires the real sidebar in, since by now `RegionList` (Task 10), `PaletteBrowser` (Task 11), and `DownloadButton` (this task) all exist. Task 9 deliberately left a placeholder there instead of importing components that didn't exist yet.
 
 - [ ] **Step 1: Write `src/components/DownloadButton.tsx`**
 
@@ -1482,15 +1520,35 @@ export function DownloadButton({
 }
 ```
 
-- [ ] **Step 2: Manual verification**
+- [ ] **Step 2: Wire `RegionList`, `PaletteBrowser`, and `DownloadButton` into `ColorStudio.tsx`**
 
-With the full Studio flow running (after Task 13), upload a photo, recolor at least one region, click "Download result", confirm a PNG file downloads and opens correctly.
+In `src/components/ColorStudio.tsx`, replace the placeholder sidebar `<div className="space-y-6">...</div>` block (the one with the comment `Temporary placeholder`) with the real composition:
 
-- [ ] **Step 3: Commit**
+```tsx
+      <div className="space-y-6">
+        <RegionList regions={regions} activeRegionId={activeRegionId} onSelectRegion={setActiveRegionId} />
+        <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+        <DownloadButton canvasRef={canvasRef} />
+      </div>
+```
+
+Add the three imports at the top of the file, alongside the existing ones:
+
+```tsx
+import { RegionList } from "./RegionList";
+import { PaletteBrowser } from "./PaletteBrowser";
+import { DownloadButton } from "./DownloadButton";
+```
+
+- [ ] **Step 3: Manual verification of the full flow**
+
+Run: `npm run dev`, mount `<ColorStudio photo={bitmap}>` behind a temporary `<PhotoUploader>` in `src/app/page.tsx` (or wait for Task 13's real Studio page if it's already done). Upload a real photo, click a wall area, pick a Berger swatch from the real `PaletteBrowser`, confirm the region list shows it, click a second disconnected area, assign a different color, confirm both regions keep their own color at once, then click "Download result" and confirm a PNG downloads and opens correctly.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/components/DownloadButton.tsx
-git commit -m "feat: add download button for the recolored result"
+git add src/components/DownloadButton.tsx src/components/ColorStudio.tsx
+git commit -m "feat: add download button and wire the full Studio sidebar"
 ```
 
 ---
