@@ -3,20 +3,26 @@
 import type { Region } from "./ColorStudio";
 import { rgbToHex } from "@/lib/canvas/colorMath";
 import { SwatchRamp } from "./SwatchRamp";
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
 
 export function RegionList({
   regions,
   activeRegionId,
   onSelectRegion,
+  locale,
 }: {
   regions: Region[];
   activeRegionId: string | null;
   onSelectRegion: (id: string) => void;
+  locale: Locale;
 }) {
+  const dict = getDictionary(locale);
+
   if (regions.length === 0) {
     return (
       <p className="border border-dashed border-hairline-strong bg-chalk px-4 py-5 text-sm leading-relaxed text-graphite/65">
-        Click a spot on the photo to select a wall, trim, or roof to recolor.
+        {dict.studio.regionsEmptyState}
       </p>
     );
   }
@@ -57,7 +63,7 @@ export function RegionList({
                   {region.label}
                 </span>
                 <span className="label-mono block text-graphite/70">
-                  {hex ? hex.toUpperCase() : "No color yet"}
+                  {hex ? hex.toUpperCase() : dict.studio.regionNoColorLabel}
                 </span>
               </span>
             </button>

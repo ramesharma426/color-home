@@ -3,31 +3,35 @@
 import { bergerYellowsOranges } from "@/data/palettes/berger-yellows-oranges";
 import { hexToRgb } from "@/lib/canvas/colorMath";
 import type { RGBColor } from "@/lib/canvas/types";
-
-const CATEGORY_LABELS: Record<string, string> = {
-  facade: "Facade",
-  trim: "Trims",
-  roof: "Roofs",
-};
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
 
 export function PaletteBrowser({
   onSelect,
   disabled = false,
+  locale,
 }: {
   onSelect: (color: RGBColor) => void;
   disabled?: boolean;
+  locale: Locale;
 }) {
+  const dict = getDictionary(locale);
   const categories = ["facade", "trim", "roof"] as const;
+  const categoryLabels: Record<string, string> = {
+    facade: dict.studio.categoryFacade,
+    trim: dict.studio.categoryTrim,
+    roof: dict.studio.categoryRoof,
+  };
 
   return (
     <div>
       {disabled && (
-        <p className="label-mono mb-3 text-graphite/70">Pick a surface first</p>
+        <p className="label-mono mb-3 text-graphite/70">{dict.studio.paletteDisabledMessage}</p>
       )}
       <div className={disabled ? "opacity-50" : undefined}>
         {categories.map((category) => (
           <div key={category} className="mb-5">
-            <h3 className="label-mono mb-2 text-graphite/70">{CATEGORY_LABELS[category]}</h3>
+            <h3 className="label-mono mb-2 text-graphite/70">{categoryLabels[category]}</h3>
             <div className="grid grid-cols-6 gap-1.5">
               {bergerYellowsOranges
                 .filter((color) => color.category === category)
@@ -56,7 +60,7 @@ export function PaletteBrowser({
           </div>
         ))}
         <label className="flex items-center gap-3 border-t border-hairline-strong/60 pt-4 text-sm text-graphite/70">
-          <span>Or pick any color</span>
+          <span>{dict.studio.pickAnyColorLabel}</span>
           <input
             type="color"
             disabled={disabled}
@@ -65,10 +69,7 @@ export function PaletteBrowser({
           />
         </label>
       </div>
-      <p className="mt-4 text-xs leading-relaxed text-graphite/75">
-        Berger colors shown are visually estimated from a printed swatch card — confirm against
-        the physical fandeck before ordering paint.
-      </p>
+      <p className="mt-4 text-xs leading-relaxed text-graphite/75">{dict.studio.paletteCaveat}</p>
     </div>
   );
 }

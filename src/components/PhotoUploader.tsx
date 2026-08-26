@@ -2,20 +2,25 @@
 
 import { useRef, useState } from "react";
 import { fitWithinMax } from "@/lib/image/downscale";
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
 
 const MAX_DIMENSION = 1600;
 
 export function PhotoUploader({
   onPhotoReady,
+  locale,
 }: {
   onPhotoReady: (bitmap: ImageBitmap) => void;
+  locale: Locale;
 }) {
+  const dict = getDictionary(locale);
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleFile(file: File) {
     if (!file.type.startsWith("image/")) {
-      setError("That file isn't an image. Please choose a photo.");
+      setError(dict.studio.uploaderErrorNotImage);
       return;
     }
     setError(null);
@@ -31,7 +36,7 @@ export function PhotoUploader({
       rawBitmap.close();
       onPhotoReady(resizedBitmap);
     } catch (err) {
-      setError("Couldn't read that image — try a different photo.");
+      setError(dict.studio.uploaderErrorDecodeFailed);
     }
   }
 
@@ -45,19 +50,19 @@ export function PhotoUploader({
         if (file) handleFile(file);
       }}
     >
-      <span className="label-mono text-skylight">Step 1 of 3</span>
+      <span className="label-mono text-skylight">{dict.studio.uploaderStepLabel}</span>
       <p className="mt-4 max-w-[30ch] font-display text-2xl font-bold leading-tight tracking-tightest text-graphite">
-        Drag a photo here, or take one with your phone.
+        {dict.studio.uploaderDragText}
       </p>
       <p className="mt-3 max-w-[44ch] text-sm leading-relaxed text-graphite/65">
-        Your photo stays in this browser tab. Nothing is uploaded, saved, or sent anywhere.
+        {dict.studio.uploaderSubtext}
       </p>
       <button
         type="button"
         className="mt-8 bg-graphite px-7 py-4 font-display text-sm font-bold uppercase tracking-[0.08em] text-chalk transition-colors hover:bg-skylight"
         onClick={() => inputRef.current?.click()}
       >
-        Choose a photo
+        {dict.studio.uploaderButtonText}
       </button>
       <input
         ref={inputRef}

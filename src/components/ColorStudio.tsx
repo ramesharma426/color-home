@@ -9,6 +9,8 @@ import type { PixelBuffer, RGBColor } from "@/lib/canvas/types";
 import { RegionList } from "./RegionList";
 import { PaletteBrowser } from "./PaletteBrowser";
 import { DownloadButton } from "./DownloadButton";
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
 
 export interface Region {
   id: string;
@@ -23,7 +25,8 @@ export interface Region {
 const DEFAULT_TOLERANCE = 24;
 const BORDER_THICKNESS = 4;
 
-export function ColorStudio({ photo }: { photo: ImageBitmap }) {
+export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Locale }) {
+  const dict = getDictionary(locale);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const baseBufferRef = useRef<PixelBuffer | null>(null);
   const [regions, setRegions] = useState<Region[]>([]);
@@ -95,7 +98,10 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
 
     const mask = await runFloodFill(baseBuffer, x, y, tolerance);
     const id = crypto.randomUUID();
-    setRegions((prev) => [...prev, { id, mask, color: null, label: `Region ${prev.length + 1}` }]);
+    setRegions((prev) => [
+      ...prev,
+      { id, mask, color: null, label: `${dict.studio.regionLabelPrefix} ${prev.length + 1}` },
+    ]);
     setActiveRegionId(id);
   }
 
@@ -126,7 +132,13 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
     const id = crypto.randomUUID();
     setRegions((prev) => [
       ...prev,
-      { id, mask, color, label: `Region ${prev.length + 1}`, recoloredData: recoloredBuffer.data },
+      {
+        id,
+        mask,
+        color,
+        label: `${dict.studio.regionLabelPrefix} ${prev.length + 1}`,
+        recoloredData: recoloredBuffer.data,
+      },
     ]);
     setActiveRegionId(id);
   }
@@ -177,9 +189,9 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
       <div className="self-start border border-hairline-strong/60 bg-chalk p-3 sm:p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-1">
-          <p className="label-mono text-skylight">Step 2 of 3 — click a surface</p>
+          <p className="label-mono text-skylight">{dict.studio.canvasStepLabel}</p>
           <label className="label-mono flex items-center gap-3 text-graphite/70">
-            <span>Sensitivity</span>
+            <span>{dict.studio.sensitivityLabel}</span>
             <input
               type="range"
               min={5}
@@ -202,15 +214,20 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
       <aside className="space-y-8">
         <section>
           <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
-            Selected surfaces
+            {dict.studio.selectedSurfacesHeading}
           </h2>
-          <RegionList regions={regions} activeRegionId={activeRegionId} onSelectRegion={setActiveRegionId} />
+          <RegionList
+            regions={regions}
+            activeRegionId={activeRegionId}
+            onSelectRegion={setActiveRegionId}
+            locale={locale}
+          />
         </section>
         <section>
           <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
-            Step 3 of 3 — choose a color
+            {dict.studio.colorStepLabel}
           </h2>
-          <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+          <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} locale={locale} />
           {activeRegionId && (
             <div className="mt-4 space-y-2 border-t border-hairline-strong/60 pt-4">
               <label className="flex items-center gap-3 text-sm text-graphite/70">
@@ -225,7 +242,7 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
                     }
                   }}
                 />
-                <span>Add a border</span>
+                <span>{dict.studio.borderCheckboxLabel}</span>
               </label>
               {regions.find((r) => r.id === activeRegionId)?.borderColor && (
                 <input
@@ -237,7 +254,7 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
             </div>
           )}
         </section>
-        <DownloadButton canvasRef={canvasRef} />
+        <DownloadButton canvasRef={canvasRef} locale={locale} />
       </aside>
     </div>
   );
