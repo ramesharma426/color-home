@@ -904,7 +904,7 @@ git commit -m "feat: add image downscale-dimension helper with tests"
 - Produces: a `useCanvasWorker()` React hook exposing `runFloodFill(buffer, seedX, seedY, tolerance): Promise<Uint8Array>` and `runRecolor(buffer, mask, color): Promise<PixelBuffer>`. Consumed by Task 9 (`ColorStudio`).
 - Message contract (worker.ts <-> useCanvasWorker.ts): requests are `{ id: string; type: "floodFill"; buffer; seedX; seedY; tolerance }` or `{ id: string; type: "recolor"; buffer; mask; targetColor }`; responses are `{ id: string; type: "floodFillResult"; mask }` or `{ id: string; type: "recolorResult"; buffer }`.
 
-This task has no unit tests: Web Workers require a browser-like environment that Vitest's `node` environment doesn't provide, and the logic being wrapped (`floodFill`, `recolor`) is already covered by Tasks 4-5. Correctness of the worker wiring itself is verified manually in Task 9 (visually, via the running dev server) and by the Task 22 Playwright test, which exercises the whole flow in a real browser.
+This task has no unit tests: Web Workers require a browser-like environment that Vitest's `node` environment doesn't provide, and the logic being wrapped (`floodFill`, `recolor`) is already covered by Tasks 4-5. Correctness of the worker wiring itself is verified manually in Task 9 (visually, via the running dev server) and by the Task 24 Playwright test, which exercises the whole flow in a real browser.
 
 - [ ] **Step 1: Write `src/lib/canvas/worker.ts`**
 
@@ -2448,7 +2448,255 @@ git commit -m "feat: add Nepali translations, /ne routes, and language switcher"
 
 ---
 
-### Task 22: End-to-end test with Playwright
+### Task 22: Catalogue data validation tests
+
+**Added per explicit owner feedback (2026-08-27):** two follow-up requests — a link to Asian Paints' public shade card ("here are all the colors with name, i want same in app, user can search for colors") and a link to Berger's official colour catalogue ("have section where we can select asian and berger separately"). The controller fetched both public sources directly, extracted every colour (name, product code, and REAL published hex value — not estimated, unlike the original hand-photographed `berger-yellows-oranges.ts` data), and committed the results as `src/data/palettes/berger-catalogue.ts` (1,575 colours) and `src/data/palettes/asian-paints-catalogue.ts` (1,828 colours) directly, since a fresh implementer subagent has no way to independently verify a real color against a live website and generating ~3,400 entries by hand invites transcription error at that scale. This task adds the validation tests those data files still need — it does not touch the data itself.
+
+**Files:**
+- Test: `src/data/palettes/berger-catalogue.test.ts`
+- Test: `src/data/palettes/asian-paints-catalogue.test.ts`
+
+**Interfaces:**
+- Consumes: `bergerCatalogue`, `bergerCategories` (from `src/data/palettes/berger-catalogue.ts`), `asianPaintsCatalogue`, `asianPaintsCategories` (from `src/data/palettes/asian-paints-catalogue.ts`), `CatalogueColor` (`src/data/palettes/types.ts`) — all already committed, nothing new to produce.
+
+- [ ] **Step 1: Write `src/data/palettes/berger-catalogue.test.ts`**
+
+```ts
+import { describe, expect, it } from "vitest";
+import { bergerCatalogue, bergerCategories } from "./berger-catalogue";
+
+describe("bergerCatalogue", () => {
+  it("has 1575 entries", () => {
+    expect(bergerCatalogue).toHaveLength(1575);
+  });
+
+  it("every entry has a valid 6-digit hex color", () => {
+    for (const color of bergerCatalogue) {
+      expect(color.hex).toMatch(/^#[0-9a-f]{6}$/);
+    }
+  });
+
+  it("every entry's category is one of the declared categories", () => {
+    for (const color of bergerCatalogue) {
+      expect(bergerCategories).toContain(color.category);
+    }
+  });
+
+  it("has no exact duplicate name+code pairs", () => {
+    const keys = bergerCatalogue.map((c) => `${c.name}|${c.code}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("every entry has a non-empty name and code", () => {
+    for (const color of bergerCatalogue) {
+      expect(color.name.length).toBeGreaterThan(0);
+      expect(color.code.length).toBeGreaterThan(0);
+    }
+  });
+});
+```
+
+- [ ] **Step 2: Run the test, confirm it passes (the data already exists — this is verifying committed data, not driving new implementation, so there is no "red" step here)**
+
+Run: `npx vitest run src/data/palettes/berger-catalogue.test.ts`
+Expected: PASS (5 tests). If anything fails, that's a real data defect in the committed catalogue — report it rather than adjusting the test to match bad data.
+
+- [ ] **Step 3: Write `src/data/palettes/asian-paints-catalogue.test.ts`** — identical structure to Step 1, against `asianPaintsCatalogue`/`asianPaintsCategories`, with the expected count `1828` instead of `1575`.
+
+- [ ] **Step 4: Run and confirm**
+
+Run: `npx vitest run src/data/palettes/asian-paints-catalogue.test.ts`
+Expected: PASS (5 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/data/palettes/berger-catalogue.test.ts src/data/palettes/asian-paints-catalogue.test.ts
+git commit -m "test: validate Berger and Asian Paints catalogue data"
+```
+
+---
+
+### Task 23: Redesign the Colors page — brand selection and search
+
+**Added per explicit owner feedback (2026-08-27):** "be creative and make the section more user friendly because here are lots of colors" — with ~3,400 colors across two brands now available (Task 22), the existing Colors page (a flat list of 21 swatches under 3 headings) doesn't scale. This task replaces it with a brand-switchable, searchable browser.
+
+**Files:**
+- Modify: `src/app/colors/page.tsx`
+- Create: `src/components/CatalogueBrowser.tsx`
+
+**Interfaces:**
+- Consumes: `bergerCatalogue`/`bergerCategories`, `asianPaintsCatalogue`/`asianPaintsCategories` (Task 22's data), `CatalogueColor` (Task 22's types).
+- The original `bergerYellowsOranges` (facade/trim/roof) data and its use inside `PaletteBrowser.tsx`/the Studio tool are UNCHANGED by this task — this is additive, a new way to browse colors on the standalone `/colors` page, not a replacement for how colors are picked inside the Studio tool.
+
+**Design constraints (this is a design-led task, following Task 15's established visual system — reuse its tokens, don't introduce a new visual language):**
+
+- At ~1,500-1,800 colors per brand, do not render the full unfiltered list by default — that's the "more user friendly" problem this task exists to solve. Default state (no search, no category picked): show the brand's category list as clickable chips/cards with nothing else, prompting the visitor to either search or pick a category, rather than dumping every color on load.
+- A search input filters by name OR code, case-insensitive substring match, across ALL categories of the currently selected brand (not just the selected category) — so typing "red" finds every color with "red" in its name regardless of which hue-family it's filed under.
+- Picking a category (when not searching) shows every color in that category as a grid of swatches, each showing its name and code (same visual pattern as the existing Colors page — small swatch block, name below, code below that).
+- A brand toggle (Berger / Asian Paints) switches the whole browser's data source and resets category/search selection.
+- Keep the existing estimated-hex caveat visible for whichever data actually needs it: `bergerYellowsOranges` doesn't appear on this redesigned page at all anymore (Task 22's Berger data has real published hex, no caveat needed for it); neither Berger nor Asian Paints catalogue data needs the "visually estimated" caveat since both are real published hex values — but note plainly, once, that swatch rendering depends on the visitor's screen/browser and can still look different from an in-store sample (reuse language consistent with the Studio disclaimer's spirit, don't just delete all caveats because the hex happens to be real this time).
+
+- [ ] **Step 1: Write `src/components/CatalogueBrowser.tsx`**
+
+```tsx
+"use client";
+
+import { useMemo, useState } from "react";
+import type { CatalogueColor, PaintBrand } from "@/data/palettes/types";
+import { bergerCatalogue, bergerCategories } from "@/data/palettes/berger-catalogue";
+import { asianPaintsCatalogue, asianPaintsCategories } from "@/data/palettes/asian-paints-catalogue";
+
+const BRANDS: { id: PaintBrand; label: string; colors: CatalogueColor[]; categories: string[] }[] = [
+  { id: "berger", label: "Berger", colors: bergerCatalogue, categories: bergerCategories },
+  { id: "asian-paints", label: "Asian Paints", colors: asianPaintsCatalogue, categories: asianPaintsCategories },
+];
+
+export function CatalogueBrowser() {
+  const [brandId, setBrandId] = useState<PaintBrand>("berger");
+  const [category, setCategory] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  const brand = BRANDS.find((b) => b.id === brandId)!;
+
+  const results = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (query) {
+      return brand.colors.filter(
+        (c) => c.name.toLowerCase().includes(query) || c.code.toLowerCase().includes(query)
+      );
+    }
+    if (category) {
+      return brand.colors.filter((c) => c.category === category);
+    }
+    return [];
+  }, [brand, category, search]);
+
+  function handleBrandChange(next: PaintBrand) {
+    setBrandId(next);
+    setCategory(null);
+    setSearch("");
+  }
+
+  return (
+    <div>
+      <div role="tablist" aria-label="Paint brand" className="mb-6 flex gap-2">
+        {BRANDS.map((b) => (
+          <button
+            key={b.id}
+            type="button"
+            role="tab"
+            aria-selected={b.id === brandId}
+            onClick={() => handleBrandChange(b.id)}
+            className={`rounded-full border px-4 py-2 text-sm font-medium ${
+              b.id === brandId ? "border-graphite bg-graphite text-chalk" : "border-hairline-strong text-graphite/70"
+            }`}
+          >
+            {b.label} <span className="text-xs opacity-70">({b.colors.length})</span>
+          </button>
+        ))}
+      </div>
+
+      <input
+        type="search"
+        value={search}
+        onChange={(event) => {
+          setSearch(event.target.value);
+          setCategory(null);
+        }}
+        placeholder={`Search ${brand.label} colors by name or code…`}
+        className="mb-6 w-full rounded-lg border border-hairline-strong px-4 py-2 text-sm"
+      />
+
+      {!search && (
+        <div className="mb-6 flex flex-wrap gap-2">
+          {brand.categories.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setCategory(cat === category ? null : cat)}
+              className={`rounded-full border px-3 py-1.5 text-sm ${
+                cat === category ? "border-graphite bg-graphite text-chalk" : "border-hairline-strong text-graphite/70"
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {results.length === 0 ? (
+        <p className="text-sm text-graphite/60">
+          {search || category
+            ? "No colors matched. Try a different name, code, or family."
+            : "Search by name or code, or pick a shade family above, to browse."}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+          {results.map((color) => (
+            <div key={`${color.name}-${color.code}`} className="overflow-hidden rounded-lg border border-hairline-strong">
+              <div className="h-16" style={{ backgroundColor: color.hex }} />
+              <div className="p-2">
+                <p className="truncate text-sm font-medium">{color.name}</p>
+                <p className="label-mono text-graphite/70">{color.code}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-8 text-xs text-graphite/60">
+        Swatches are rendered from each brand's published colour values, but how they look still depends on
+        your screen — confirm against a physical fandeck or sample pot before painting.
+      </p>
+    </div>
+  );
+}
+```
+
+Adjust class names to match whatever Task 15 actually left as the established tokens (`graphite`, `chalk`, `hairline-strong`, `label-mono`, etc.) — read `tailwind.config.ts` and a sibling file like `PaletteBrowser.tsx` first to confirm exact token names before using them; the snippet above uses the names introduced in Task 15's report but verify against the real file.
+
+- [ ] **Step 2: Rewrite `src/app/colors/page.tsx` to use it**
+
+Replace the existing flat Berger-yellows-oranges listing with:
+
+```tsx
+import { CatalogueBrowser } from "@/components/CatalogueBrowser";
+
+export default function ColorsPage() {
+  return (
+    <main className="mx-auto max-w-5xl p-6">
+      <h1 className="mb-2 text-2xl font-semibold">Browse Colors</h1>
+      <p className="mb-6 text-sm text-graphite/70">
+        Explore the full Berger and Asian Paints catalogues — search by name or code, or browse by shade family.
+      </p>
+      <CatalogueBrowser />
+    </main>
+  );
+}
+```
+
+Match this page's heading/intro styling to whatever Task 15 actually left here — read the current file first.
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running (do NOT run `npm run build`), `curl http://localhost:3000/colors` — confirm 200 and the brand toggle / search input / category chips are present in the markup. Since search/category state is client-side, a plain curl only shows the initial (empty) state — that's correct per this task's own design constraint (nothing renders until the visitor searches or picks a category).
+
+- [ ] **Step 4: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — must stay at the same pass count as before this task; this task does not touch `PaletteBrowser.tsx`, `ColorStudio.tsx`, or `berger-yellows-oranges.ts`, so nothing here should change existing test results.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/app/colors/page.tsx src/components/CatalogueBrowser.tsx
+git commit -m "feat: redesign Colors page with brand selection and search"
+```
+
+---
+
+### Task 24: End-to-end test with Playwright
 
 **Files:**
 - Create: `playwright.config.ts`
@@ -2566,5 +2814,5 @@ git commit -m "test: add end-to-end coverage for the upload-to-download flow"
 
 - **Spec coverage:** landing/Studio/Colors pages (Tasks 13-15), flood fill + lightness-preserving recolor (Tasks 4-5), multi-region support (Task 9's `regions` array), Berger palette + free picker (Tasks 3, 11), download-only output (Task 12), downscaling large photos (Task 6, wired in Task 8), Web Worker with the constraint that pixel math must stay DOM-free (Tasks 2, 4, 5, 7), GitHub Pages deploy (Task 16), unit + E2E testing strategy (Tasks 2-6, 17) — all covered.
 - **Type consistency:** `PixelBuffer`/`RGBColor` (Task 2) used identically through Tasks 4, 5, 7, 8, 9. `Region` is defined once in Task 9 and imported by Task 10, with the `recoloredData` field called out explicitly to avoid a Task 9/Task 10 mismatch. Worker message `type` strings (`floodFill`/`floodFillResult`/`recolor`/`recolorResult`) match between Task 7's `worker.ts` and `useCanvasWorker.ts`.
-- **No placeholders:** the one deliberately deferred item (a hand-authored PNG fixture in Task 22) was replaced with a concrete in-browser generation approach rather than left as a TODO.
-- **Post-launch additions (2026-08-27):** Tasks 17-21 (border mask helper, border UI wiring, drag-and-drop swatch-to-region, dictionary extraction, Nepali translations + /ne routes + switcher) were added after Tasks 1-16 were already implemented and reviewed, per explicit owner feedback during that work. They follow the same file-structure and task-right-sizing conventions as the original plan and were inserted before the Playwright task (now Task 22) so the e2e coverage lands after the full feature set exists. Task 21's Nepali translation content is intentionally not pre-written into the plan text — it depends on Task 20's exact key inventory, which didn't exist when this plan section was authored — the controller supplies the actual Nepali strings at Task 21's dispatch time.
+- **No placeholders:** the one deliberately deferred item (a hand-authored PNG fixture in Task 24) was replaced with a concrete in-browser generation approach rather than left as a TODO.
+- **Post-launch additions (2026-08-27):** Tasks 17-23 (border mask helper, border UI wiring, drag-and-drop swatch-to-region, dictionary extraction, Nepali translations + /ne routes + switcher, catalogue data validation, redesigned searchable Colors page) were added after Tasks 1-16 were already implemented and reviewed, per explicit owner feedback during that work. They follow the same file-structure and task-right-sizing conventions as the original plan and were inserted before the Playwright task (now Task 24) so the e2e coverage lands after the full feature set exists. Task 21's Nepali translation content is intentionally not pre-written into the plan text — it depends on Task 20's exact key inventory, which didn't exist when this plan section was authored — the controller supplies the actual Nepali strings at Task 21's dispatch time. Task 22's two catalogue data files (1,575 Berger + 1,828 Asian Paints colors, real published hex values) were authored directly by the controller from public source pages rather than by an implementer subagent, since verifying ~3,400 real-world color values against live external websites isn't something a sandboxed implementer can do independently — Task 22 itself only adds the validation tests for that already-committed data.
