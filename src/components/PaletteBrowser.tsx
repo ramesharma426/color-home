@@ -39,6 +39,14 @@ export function PaletteBrowser({
                     aria-label={`${color.name}, ${color.code}`}
                     disabled={disabled}
                     onClick={() => onSelect(hexToRgb(color.hex))}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData(
+                        "application/x-color-rgb",
+                        JSON.stringify(hexToRgb(color.hex))
+                      );
+                      event.dataTransfer.effectAllowed = "copy";
+                    }}
                     className="aspect-square border border-graphite/15 transition-transform duration-150 hover:-translate-y-0.5 hover:border-graphite/50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
                     style={{ backgroundColor: color.hex }}
                   />

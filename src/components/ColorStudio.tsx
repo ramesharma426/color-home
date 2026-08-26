@@ -99,6 +99,38 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
     setActiveRegionId(id);
   }
 
+  async function handleCanvasDrop(event: React.DragEvent<HTMLCanvasElement>) {
+    event.preventDefault();
+    const canvas = canvasRef.current;
+    const baseBuffer = baseBufferRef.current;
+    if (!canvas || !baseBuffer) return;
+
+    const raw = event.dataTransfer.getData("application/x-color-rgb");
+    if (!raw) return;
+
+    let color: RGBColor;
+    try {
+      color = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = Math.round((event.clientX - rect.left) * scaleX);
+    const y = Math.round((event.clientY - rect.top) * scaleY);
+
+    const mask = await runFloodFill(baseBuffer, x, y, tolerance);
+    const recoloredBuffer = await runRecolor(baseBuffer, mask, color);
+    const id = crypto.randomUUID();
+    setRegions((prev) => [
+      ...prev,
+      { id, mask, color, label: `Region ${prev.length + 1}`, recoloredData: recoloredBuffer.data },
+    ]);
+    setActiveRegionId(id);
+  }
+
   async function handleColorSelect(color: RGBColor) {
     const baseBuffer = baseBufferRef.current;
     if (!baseBuffer || !activeRegionId) return;
@@ -162,6 +194,8 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
         <canvas
           ref={canvasRef}
           onClick={handleCanvasClick}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={handleCanvasDrop}
           className="block w-full cursor-crosshair border border-hairline"
         />
       </div>
