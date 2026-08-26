@@ -1576,6 +1576,14 @@ export default function StudioPage() {
   return (
     <main className="mx-auto max-w-5xl p-6">
       <h1 className="mb-6 text-2xl font-semibold">Color Home Studio</h1>
+      <p className="mb-6 text-sm text-slate-500">
+        Screens make color by mixing glowing red, green, and blue light; paint makes color by
+        reflecting light off pigment on a wall — the same color will never look perfectly
+        identical between the two. Your monitor's calibration, the lighting this photo was
+        taken in, and the lighting in your actual room all shift how a color reads as well.
+        Treat this preview as a guide to the overall look, not an exact match — always confirm
+        with a physical paint swatch in your own room's lighting before ordering.
+      </p>
       {photo ? (
         <ColorStudio photo={photo} />
       ) : (
@@ -1585,6 +1593,8 @@ export default function StudioPage() {
   );
 }
 ```
+
+**Added per explicit owner feedback (2026-08-27):** the disclaimer paragraph above — first added as a plain "colors may vary" notice, then the owner asked for it to actually explain *why* (screens emit RGB light, paint reflects pigment, plus monitor calibration and lighting differences), revised to the current wording. Distinct from the Berger-swatch-specific caveat already planned for Task 11/14 (which is about the swatch hex being estimated from a photographed card, not about screen/lighting variance). Keep both — they cover different sources of inaccuracy.
 
 - [ ] **Step 2: Manual verification**
 
@@ -1666,41 +1676,53 @@ git commit -m "feat: add browsable Colors gallery page"
 
 ---
 
-### Task 15: Landing page — visual identity + build
+### Task 15: Visual identity — design pass across the whole product
+
+**Expanded scope (per explicit owner feedback, 2026-08-27: "i want nice and proper UI"):** this task originally covered only the landing page. Tasks 8-13 were deliberately built with bare-bones functional Tailwind first (to get the upload/wand/recolor mechanics correct and reviewable before investing in visual polish) — that was always meant to be temporary scaffolding, not the finished look. This task now applies one cohesive design system across **every** page: landing, Studio, and Colors — not just the marketing page.
 
 **Files:**
-- Modify: `src/app/page.tsx`
+- Modify: `src/app/page.tsx` (landing)
+- Modify: `src/app/studio/page.tsx`, `src/components/PhotoUploader.tsx`, `src/components/ColorStudio.tsx`, `src/components/RegionList.tsx`, `src/components/PaletteBrowser.tsx`, `src/components/DownloadButton.tsx` (Studio — restyle only; do not change any of the pixel-processing logic, click handling, or state management these components already have and were already reviewed for)
+- Modify: `src/app/colors/page.tsx` (Colors gallery)
 
-**Interfaces:**
-- Links to `/studio` (Task 13) and `/colors` (Task 14).
+**Interfaces:** unchanged — this is a styling pass, not a props/behavior change. Every component keeps the exact props signature it already has.
 
-This task is design-led, not TDD — it produces the customer-facing first impression of the site, so it needs a real aesthetic pass rather than a generic hero-plus-three-features template.
+This task is design-led, not TDD — it produces the customer-facing look of the whole product, so it needs a real aesthetic pass rather than default utility-class scaffolding on every screen.
 
 - [ ] **Step 1: Invoke the frontend-design skill**
 
-Invoke `frontend-design`. Brief it with: the subject is "Color Home," a tool for a paint/hardware business's customers to preview paint colors on photos of their own home before buying; the page's single job is to explain the idea in one screen and get the visitor into `/studio`; the Berger yellows/oranges palette (`docs/colors/berger-yellows-oranges.md`) and the recolor-not-flat-fill technique are real material to ground the design in, not generic paint-brand cliché (no default warm-cream-plus-terracotta template — earn the palette from this specific content).
+Invoke `frontend-design`. Brief it with: the subject is "Color Home," a tool for a paint/hardware business's customers to preview paint colors on photos of their own home before buying; there are three screens to design as one system (landing/marketing, the Studio tool itself, and a browsable Colors gallery) sharing one token system, not three separate looks; the Berger yellows/oranges palette (`docs/colors/berger-yellows-oranges.md`) and the recolor-not-flat-fill technique are real material to ground the design in, not generic paint-brand cliché (no default warm-cream-plus-terracotta template — earn the palette from this specific content). The Studio page is a working tool, not just a hero — its design must keep the upload/canvas/sidebar clearly usable (a click target on the canvas, a legible region list, visible swatches) while still looking intentional, not like an unstyled prototype.
 
 - [ ] **Step 2: Produce and review the design plan**
 
-Follow the skill's brainstorm pass: a compact token system (4-6 named hex values, 2+ typefaces, a layout concept with an ASCII wireframe, and one signature element). Check it against the anti-pattern list in the skill before building.
+Follow the skill's brainstorm pass: a compact token system (4-6 named hex values, 2+ typefaces, a layout concept with an ASCII wireframe per screen, and one signature element). Check it against the anti-pattern list in the skill before building.
 
-- [ ] **Step 3: Implement into `src/app/page.tsx`**
+- [ ] **Step 3: Implement the landing page (`src/app/page.tsx`)**
 
-Build the hero, a short "how it works" section (upload → select → recolor → download), and a clear call-to-action linking to `/studio` (and a secondary link to `/colors`). Use Tailwind classes consistent with the rest of the app.
+Build the hero, a short "how it works" section (upload → select → recolor → download), and a clear call-to-action linking to `/studio` (and a secondary link to `/colors`).
 
-- [ ] **Step 4: Screenshot and self-critique**
+- [ ] **Step 4: Apply the same design system to the Studio page and its components**
 
-Run: `npm run dev`, screenshot the page at a mobile width (375px) and a desktop width (1440px). Check contrast, spacing, and that the CTA is unmistakable on both.
+Restyle `src/app/studio/page.tsx`, `PhotoUploader.tsx`, `ColorStudio.tsx`, `RegionList.tsx`, `PaletteBrowser.tsx`, and `DownloadButton.tsx` using the token system from Step 2 — consistent spacing, typography, color, and the disclaimer copy already present (approximation notice, Berger-estimate caveat). Keep every existing `className`'s functional intent (e.g. `cursor-crosshair` on the canvas, `disabled` states on the palette) — you're changing the visual language, not removing behavior-bearing classes.
 
-- [ ] **Step 5: Verify the static build still succeeds**
+- [ ] **Step 5: Apply the same design system to the Colors page**
+
+Restyle `src/app/colors/page.tsx` to match.
+
+- [ ] **Step 6: Screenshot and self-critique all three screens**
+
+Run: `npm run dev`, screenshot the landing page, Studio page (both empty-upload and mid-flow-with-a-photo states if feasible), and Colors page, each at a mobile width (375px) and a desktop width (1440px). Check contrast, spacing, that the CTA is unmistakable, and that the Studio page still clearly reads as an interactive tool.
+
+- [ ] **Step 7: Verify the static build still succeeds and existing tests still pass**
 
 Run: `npm run build`
+Run: `npm test` — this is a styling-only change, so all existing unit tests must still pass unmodified; a failure here means a restyle accidentally changed logic, not just appearance.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/app/page.tsx
-git commit -m "feat: design and build the Color Home landing page"
+git add src/app/page.tsx src/app/studio/page.tsx src/app/colors/page.tsx src/components/PhotoUploader.tsx src/components/ColorStudio.tsx src/components/RegionList.tsx src/components/PaletteBrowser.tsx src/components/DownloadButton.tsx
+git commit -m "feat: apply cohesive visual identity across landing, Studio, and Colors pages"
 ```
 
 ---
