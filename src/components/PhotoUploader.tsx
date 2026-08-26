@@ -20,14 +20,19 @@ export function PhotoUploader({
     }
     setError(null);
 
-    const rawBitmap = await createImageBitmap(file);
-    const { width, height } = fitWithinMax(rawBitmap.width, rawBitmap.height, MAX_DIMENSION);
-    const resizedBitmap = await createImageBitmap(rawBitmap, {
-      resizeWidth: width,
-      resizeHeight: height,
-      resizeQuality: "high",
-    });
-    onPhotoReady(resizedBitmap);
+    try {
+      const rawBitmap = await createImageBitmap(file);
+      const { width, height } = fitWithinMax(rawBitmap.width, rawBitmap.height, MAX_DIMENSION);
+      const resizedBitmap = await createImageBitmap(rawBitmap, {
+        resizeWidth: width,
+        resizeHeight: height,
+        resizeQuality: "high",
+      });
+      rawBitmap.close();
+      onPhotoReady(resizedBitmap);
+    } catch (err) {
+      setError("Couldn't read that image — try a different photo.");
+    }
   }
 
   return (
@@ -58,7 +63,10 @@ export function PhotoUploader({
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) handleFile(file);
+          if (file) {
+            handleFile(file);
+            event.target.value = "";
+          }
         }}
       />
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
