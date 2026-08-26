@@ -1,0 +1,9 @@
+.idea/
+.claude/settings.local.json
+node_modules/
+.next/
+out/
+.worktrees/
+.superpowers/
+*.log
+.DS_Store
