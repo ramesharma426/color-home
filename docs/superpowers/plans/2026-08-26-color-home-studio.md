@@ -904,7 +904,7 @@ git commit -m "feat: add image downscale-dimension helper with tests"
 - Produces: a `useCanvasWorker()` React hook exposing `runFloodFill(buffer, seedX, seedY, tolerance): Promise<Uint8Array>` and `runRecolor(buffer, mask, color): Promise<PixelBuffer>`. Consumed by Task 9 (`ColorStudio`).
 - Message contract (worker.ts <-> useCanvasWorker.ts): requests are `{ id: string; type: "floodFill"; buffer; seedX; seedY; tolerance }` or `{ id: string; type: "recolor"; buffer; mask; targetColor }`; responses are `{ id: string; type: "floodFillResult"; mask }` or `{ id: string; type: "recolorResult"; buffer }`.
 
-This task has no unit tests: Web Workers require a browser-like environment that Vitest's `node` environment doesn't provide, and the logic being wrapped (`floodFill`, `recolor`) is already covered by Tasks 4-5. Correctness of the worker wiring itself is verified manually in Task 9 (visually, via the running dev server) and by the Task 17 Playwright test, which exercises the whole flow in a real browser.
+This task has no unit tests: Web Workers require a browser-like environment that Vitest's `node` environment doesn't provide, and the logic being wrapped (`floodFill`, `recolor`) is already covered by Tasks 4-5. Correctness of the worker wiring itself is verified manually in Task 9 (visually, via the running dev server) and by the Task 20 Playwright test, which exercises the whole flow in a real browser.
 
 - [ ] **Step 1: Write `src/lib/canvas/worker.ts`**
 
@@ -1791,7 +1791,375 @@ git commit -m "ci: deploy static build to GitHub Pages"
 
 ---
 
-### Task 17: End-to-end test with Playwright
+### Task 17: Border mask helper
+
+**Added per explicit owner feedback (2026-08-27):** "wall have borders, so add option to add borders too" — clarified via follow-up question: each region should support an optional border/outline color in addition to its fill color, drawn as a ring around the region's edge (not just relying on selecting the trim as a second region, which the tool already supports).
+
+**Files:**
+- Create: `src/lib/canvas/borderMask.ts`
+- Test: `src/lib/canvas/borderMask.test.ts`
+
+**Interfaces:**
+- Consumes: nothing new (works on a plain `Uint8Array` mask, same shape `floodFill` produces).
+- Produces: `computeBorderMask(mask: Uint8Array, width: number, height: number, thickness: number): Uint8Array` — a new mask containing only the pixels within `thickness` layers of the original mask's edge. Consumed by Task 18 (`ColorStudio`).
+
+The algorithm eroding the mask `thickness` times (4-connected: a pixel survives erosion only if it and all four of its neighbors are in the mask) and taking `original AND NOT eroded` as the border ring. Pure, DOM-free, same testing approach as `floodFill`/`recolor`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// src/lib/canvas/borderMask.test.ts
+import { describe, expect, it } from "vitest";
+import { computeBorderMask } from "./borderMask";
+
+function makeSquareMask(width: number, height: number, x0: number, y0: number, size: number): Uint8Array {
+  const mask = new Uint8Array(width * height);
+  for (let y = y0; y < y0 + size; y++) {
+    for (let x = x0; x < x0 + size; x++) {
+      mask[y * width + x] = 1;
+    }
+  }
+  return mask;
+}
+
+describe("computeBorderMask", () => {
+  it("returns the outer ring of a solid square at thickness 1", () => {
+    const mask = makeSquareMask(10, 10, 2, 2, 6); // 6x6 square, 36 pixels
+    const border = computeBorderMask(mask, 10, 10, 1);
+    const borderCount = border.reduce((sum, v) => sum + v, 0);
+    expect(borderCount).toBe(20); // 36 total - 16 interior (4x4 after one erosion)
+    // A corner of the square must be in the border; the exact center must not be.
+    expect(border[2 * 10 + 2]).toBe(1);
+    expect(border[4 * 10 + 4]).toBe(0);
+  });
+
+  it("returns a thicker ring at thickness 2", () => {
+    const mask = makeSquareMask(10, 10, 2, 2, 6);
+    const border = computeBorderMask(mask, 10, 10, 2);
+    const borderCount = border.reduce((sum, v) => sum + v, 0);
+    expect(borderCount).toBe(32); // 36 total - 4 interior (2x2 after two erosions)
+  });
+
+  it("treats pixels outside the buffer as outside the mask, so a mask touching the edge borders there too", () => {
+    const mask = new Uint8Array(25).fill(1); // entire 5x5 buffer selected
+    const border = computeBorderMask(mask, 5, 5, 1);
+    // Every edge pixel has an out-of-bounds neighbor, so the whole 1px edge ring is border.
+    expect(border[0]).toBe(1); // corner
+    expect(border[2 * 5 + 2]).toBe(0); // center survives one erosion
+  });
+
+  it("returns an empty mask for an empty input", () => {
+    const mask = new Uint8Array(100);
+    const border = computeBorderMask(mask, 10, 10, 2);
+    expect(border.reduce((sum, v) => sum + v, 0)).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `npx vitest run src/lib/canvas/borderMask.test.ts`
+Expected: FAIL with "Cannot find module './borderMask'"
+
+- [ ] **Step 3: Write `src/lib/canvas/borderMask.ts`**
+
+```ts
+function erode(mask: Uint8Array, width: number, height: number): Uint8Array {
+  const result = new Uint8Array(mask.length);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = y * width + x;
+      if (!mask[index]) continue;
+
+      const neighbors: Array<[number, number]> = [
+        [x - 1, y],
+        [x + 1, y],
+        [x, y - 1],
+        [x, y + 1],
+      ];
+
+      const allNeighborsInside = neighbors.every(([nx, ny]) => {
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) return false;
+        return mask[ny * width + nx] === 1;
+      });
+
+      result[index] = allNeighborsInside ? 1 : 0;
+    }
+  }
+
+  return result;
+}
+
+export function computeBorderMask(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  thickness: number
+): Uint8Array {
+  let eroded = mask;
+  for (let i = 0; i < thickness; i++) {
+    eroded = erode(eroded, width, height);
+  }
+
+  const border = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i++) {
+    border[i] = mask[i] && !eroded[i] ? 1 : 0;
+  }
+  return border;
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `npx vitest run src/lib/canvas/borderMask.test.ts`
+Expected: PASS (4 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/canvas/borderMask.ts src/lib/canvas/borderMask.test.ts
+git commit -m "feat: add border-ring mask helper for optional region outlines"
+```
+
+---
+
+### Task 18: Wire border color option into ColorStudio
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:**
+- Consumes: `computeBorderMask` (Task 17), `runRecolor` (Task 7, already used for fill), `Region` (extended below).
+- Extends `Region` with `borderColor?: RGBColor` and `borderRecoloredData?: Uint8ClampedArray`.
+
+A border is optional per region: a checkbox reveals a native color input; picking a color computes the border ring (via `computeBorderMask` on that region's existing fill mask, main-thread — it's a cheap boolean-array pass, not the expensive per-pixel HSL work `recolor` does) and recolors just that ring through the existing worker `runRecolor` call, exactly like the fill color does for the full mask. `render()`'s compositing loop draws each region's fill first, then its border ring on top, so the border color always wins over the fill color at the edge — matching how a painted trim line sits on top of a wall color in reality.
+
+- [ ] **Step 1: Add the border thickness constant and extend `Region`**
+
+In `src/components/ColorStudio.tsx`, add near `DEFAULT_TOLERANCE`:
+
+```tsx
+const BORDER_THICKNESS = 4;
+```
+
+Extend the `Region` interface:
+
+```tsx
+export interface Region {
+  id: string;
+  mask: Uint8Array;
+  color: RGBColor | null;
+  label: string;
+  recoloredData?: Uint8ClampedArray;
+  borderColor?: RGBColor | null;
+  borderRecoloredData?: Uint8ClampedArray;
+}
+```
+
+- [ ] **Step 2: Add the border import and handler**
+
+```tsx
+import { computeBorderMask } from "@/lib/canvas/borderMask";
+```
+
+```tsx
+async function handleBorderColorSelect(color: RGBColor | null) {
+  const baseBuffer = baseBufferRef.current;
+  if (!baseBuffer || !activeRegionId) return;
+
+  const region = regions.find((r) => r.id === activeRegionId);
+  if (!region) return;
+
+  if (!color) {
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === activeRegionId ? { ...r, borderColor: null, borderRecoloredData: undefined } : r
+      )
+    );
+    return;
+  }
+
+  const borderMask = computeBorderMask(region.mask, baseBuffer.width, baseBuffer.height, BORDER_THICKNESS);
+  const recoloredBuffer = await runRecolor(baseBuffer, borderMask, color);
+  setRegions((prev) =>
+    prev.map((r) =>
+      r.id === activeRegionId ? { ...r, borderColor: color, borderRecoloredData: recoloredBuffer.data } : r
+    )
+  );
+}
+```
+
+- [ ] **Step 3: Extend `render()`'s compositing loop to draw borders on top of fills**
+
+Find the existing loop (`for (const region of regions) { ... }` that overlays `region.recoloredData` via `region.mask`) and add a second pass for the border, using the SAME structure but keyed on `region.borderRecoloredData`. The border pass for a given region must run after that region's own fill pass (so the border wins at the edge), but region-to-region order stays the same as before (each region's own fill+border pair, in `regions` array order):
+
+```tsx
+    for (const region of regions) {
+      if (!region.recoloredData) continue;
+      for (let pixelIndex = 0; pixelIndex < region.mask.length; pixelIndex++) {
+        if (!region.mask[pixelIndex]) continue;
+        const offset = pixelIndex * 4;
+        composed[offset] = region.recoloredData[offset];
+        composed[offset + 1] = region.recoloredData[offset + 1];
+        composed[offset + 2] = region.recoloredData[offset + 2];
+        composed[offset + 3] = region.recoloredData[offset + 3];
+      }
+
+      if (!region.borderRecoloredData) continue;
+      const borderMask = computeBorderMask(region.mask, baseBuffer.width, baseBuffer.height, BORDER_THICKNESS);
+      for (let pixelIndex = 0; pixelIndex < borderMask.length; pixelIndex++) {
+        if (!borderMask[pixelIndex]) continue;
+        const offset = pixelIndex * 4;
+        composed[offset] = region.borderRecoloredData[offset];
+        composed[offset + 1] = region.borderRecoloredData[offset + 1];
+        composed[offset + 2] = region.borderRecoloredData[offset + 2];
+        composed[offset + 3] = region.borderRecoloredData[offset + 3];
+      }
+    }
+```
+
+**Note for the implementer:** `computeBorderMask` is recomputed here in `render()` rather than cached on the region — it's a cheap boolean pass (no HSL math), so recomputing it at render time keeps the `Region` type smaller and avoids a second piece of derived state to keep in sync. Do not "optimize" this into a stored field as part of this task; if profiling ever shows it matters, that's a separate, deliberate change.
+
+- [ ] **Step 4: Add the border UI control to the sidebar**
+
+In the JSX where `PaletteBrowser` is rendered, add a border control directly below it, styled consistently with the rest of the Task 15 design system already in this file (use the same `graphite`/`chalk`/`sun` tokens and spacing conventions already present in this file — do not reach for different colors or a different visual language for this one control):
+
+```tsx
+{activeRegionId && (
+  <div className="space-y-2">
+    <label className="flex items-center gap-2 text-sm text-graphite/70">
+      <input
+        type="checkbox"
+        checked={Boolean(regions.find((r) => r.id === activeRegionId)?.borderColor)}
+        onChange={(event) => {
+          if (!event.target.checked) {
+            handleBorderColorSelect(null);
+          }
+        }}
+      />
+      Add a border
+    </label>
+    {regions.find((r) => r.id === activeRegionId)?.borderColor && (
+      <input
+        type="color"
+        onChange={(event) => {
+          const hex = event.target.value;
+          const r = parseInt(hex.slice(1, 3), 16);
+          const g = parseInt(hex.slice(3, 5), 16);
+          const b = parseInt(hex.slice(5, 7), 16);
+          handleBorderColorSelect({ r, g, b });
+        }}
+        className="h-8 w-12"
+      />
+    )}
+  </div>
+)}
+```
+
+Checking the box with no color chosen yet should call `handleBorderColorSelect` with a sensible default (e.g. pure white `{r:255,g:255,b:255}`) so the color input immediately appears with a border already applied — wire this into the checkbox's `onChange` for the `checked` (true) branch, following the same pattern as the `false` branch above (call `handleBorderColorSelect({ r: 255, g: 255, b: 255 })` when checked becomes true).
+
+- [ ] **Step 5: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up — see this project's established caution about `.next` cache collisions), upload a photo, select a region, add a border via the checkbox, confirm a border ring appears drawn on top of the fill color at the region's edge. Change the fill color afterward and confirm the border stays on top rather than being covered by the new fill.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: add optional border/outline color per region"
+```
+
+---
+
+### Task 19: Drag-and-drop a swatch directly onto a region
+
+**Added per explicit owner feedback (2026-08-27):** "color can also be dragged and dropped in region directly" — an alternative, faster interaction alongside the existing click-then-pick-color flow: drag a Berger swatch from the palette browser and drop it on a spot in the photo; that spot gets flood-filled and recolored in one motion, no separate "select region, then pick its color" round-trip.
+
+**Files:**
+- Modify: `src/components/PaletteBrowser.tsx` (make swatch buttons draggable)
+- Modify: `src/components/ColorStudio.tsx` (make the canvas a drop target)
+
+**Interfaces:**
+- No new exported functions — reuses `runFloodFill`/`runRecolor` (Task 7) exactly as `handleCanvasClick`/`handleColorSelect` already do. Drag payload is a JSON-encoded `RGBColor` under the `application/x-color-rgb` MIME type.
+
+This is additive: the existing click-to-select-then-pick-color flow in `ColorStudio.tsx` is untouched. Dropping a color is a new, separate path that performs both steps (flood fill + recolor) in one handler.
+
+- [ ] **Step 1: Make Berger swatch buttons draggable in `PaletteBrowser.tsx`**
+
+Find the swatch `<button>` inside the category loop (the one with `style={{ backgroundColor: color.hex }}`) and add:
+
+```tsx
+draggable
+onDragStart={(event) => {
+  event.dataTransfer.setData("application/x-color-rgb", JSON.stringify(hexToRgb(color.hex)));
+  event.dataTransfer.effectAllowed = "copy";
+}}
+```
+
+The native free-color `<input type="color">` is left as click-only — browsers don't support dragging a color out of that control in a way worth building around; this feature covers the Berger swatches, which is the primary case.
+
+- [ ] **Step 2: Add a drop handler to the canvas in `ColorStudio.tsx`**
+
+Add near `handleCanvasClick`:
+
+```tsx
+async function handleCanvasDrop(event: React.DragEvent<HTMLCanvasElement>) {
+  event.preventDefault();
+  const canvas = canvasRef.current;
+  const baseBuffer = baseBufferRef.current;
+  if (!canvas || !baseBuffer) return;
+
+  const raw = event.dataTransfer.getData("application/x-color-rgb");
+  if (!raw) return;
+
+  let color: RGBColor;
+  try {
+    color = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = Math.round((event.clientX - rect.left) * scaleX);
+  const y = Math.round((event.clientY - rect.top) * scaleY);
+
+  const mask = await runFloodFill(baseBuffer, x, y, tolerance);
+  const recoloredBuffer = await runRecolor(baseBuffer, mask, color);
+  const id = crypto.randomUUID();
+  setRegions((prev) => [
+    ...prev,
+    { id, mask, color, label: `Region ${prev.length + 1}`, recoloredData: recoloredBuffer.data },
+  ]);
+  setActiveRegionId(id);
+}
+```
+
+Wire it onto the `<canvas>` element, alongside the existing `onClick={handleCanvasClick}`:
+
+```tsx
+onDragOver={(event) => event.preventDefault()}
+onDrop={handleCanvasDrop}
+```
+
+(`onDragOver` must call `preventDefault()` — same rule as the existing `PhotoUploader` drag-and-drop — or the browser will refuse to fire `onDrop` at all.)
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up), upload a photo, drag a Berger swatch from the sidebar onto a wall area in the photo, confirm it flood-fills and recolors that spot in one motion and appears in the region list with the dropped color already set. Confirm the existing click-then-pick flow still works unchanged afterward.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/components/PaletteBrowser.tsx src/components/ColorStudio.tsx
+git commit -m "feat: support dragging a swatch directly onto a region"
+```
+
+---
+
+### Task 20: End-to-end test with Playwright
 
 **Files:**
 - Create: `playwright.config.ts`
@@ -1909,4 +2277,5 @@ git commit -m "test: add end-to-end coverage for the upload-to-download flow"
 
 - **Spec coverage:** landing/Studio/Colors pages (Tasks 13-15), flood fill + lightness-preserving recolor (Tasks 4-5), multi-region support (Task 9's `regions` array), Berger palette + free picker (Tasks 3, 11), download-only output (Task 12), downscaling large photos (Task 6, wired in Task 8), Web Worker with the constraint that pixel math must stay DOM-free (Tasks 2, 4, 5, 7), GitHub Pages deploy (Task 16), unit + E2E testing strategy (Tasks 2-6, 17) — all covered.
 - **Type consistency:** `PixelBuffer`/`RGBColor` (Task 2) used identically through Tasks 4, 5, 7, 8, 9. `Region` is defined once in Task 9 and imported by Task 10, with the `recoloredData` field called out explicitly to avoid a Task 9/Task 10 mismatch. Worker message `type` strings (`floodFill`/`floodFillResult`/`recolor`/`recolorResult`) match between Task 7's `worker.ts` and `useCanvasWorker.ts`.
-- **No placeholders:** the one deliberately deferred item (a hand-authored PNG fixture in Task 17) was replaced with a concrete in-browser generation approach rather than left as a TODO.
+- **No placeholders:** the one deliberately deferred item (a hand-authored PNG fixture in Task 20) was replaced with a concrete in-browser generation approach rather than left as a TODO.
+- **Post-launch additions (2026-08-27):** Tasks 17-19 (border mask helper, border UI wiring, drag-and-drop swatch-to-region) were added after Tasks 1-16 were already implemented and reviewed, per explicit owner feedback during that work. They follow the same file-structure and task-right-sizing conventions as the original plan and were inserted before the Playwright task (now Task 20) so the e2e coverage lands after the full feature set exists.
