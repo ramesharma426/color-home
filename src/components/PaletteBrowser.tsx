@@ -37,8 +37,9 @@ export function PaletteBrowser({
                     type="button"
                     title={`${color.name} — ${color.code}`}
                     aria-label={`${color.name}, ${color.code}`}
-                    disabled={disabled}
-                    onClick={() => onSelect(hexToRgb(color.hex))}
+                    onClick={() => {
+                      if (!disabled) onSelect(hexToRgb(color.hex));
+                    }}
                     draggable
                     onDragStart={(event) => {
                       event.dataTransfer.setData(
