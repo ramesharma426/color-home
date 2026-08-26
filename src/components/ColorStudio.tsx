@@ -101,7 +101,7 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
       <div className="self-start border border-hairline-strong/60 bg-chalk p-3 sm:p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-1">
           <p className="label-mono text-skylight">Step 2 of 3 — click a surface</p>
-          <label className="label-mono flex items-center gap-3 text-graphite/60">
+          <label className="label-mono flex items-center gap-3 text-graphite/70">
             <span>Sensitivity</span>
             <input
               type="range"

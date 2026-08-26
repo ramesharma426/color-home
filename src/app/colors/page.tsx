@@ -75,7 +75,7 @@ export default function ColorsPage() {
                       <p className="min-w-0 font-display text-sm font-bold leading-tight tracking-tightest">
                         {color.name}
                       </p>
-                      <p className="label-mono shrink-0 text-graphite/60">{color.code}</p>
+                      <p className="label-mono shrink-0 text-graphite/70">{color.code}</p>
                     </div>
                   </li>
                 ))}

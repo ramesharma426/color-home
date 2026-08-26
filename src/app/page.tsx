@@ -3,7 +3,9 @@ import { SiteNav } from "@/components/SiteNav";
 import { SwatchRamp } from "@/components/SwatchRamp";
 import { bergerYellowsOranges } from "@/data/palettes/berger-yellows-oranges";
 
-const HERO_COLOR = bergerYellowsOranges.find((color) => color.name === "Late Day Sun")!;
+// Matched on the Berger product code, not the display name: the name is copy and
+// could be edited, the code is the stable key off the physical card.
+const HERO_COLOR = bergerYellowsOranges.find((color) => color.code === "2T 0669")!;
 
 const STEPS = [
   {
@@ -68,12 +70,12 @@ export default function HomePage() {
                 <span className="font-display text-lg font-bold tracking-tightest">
                   {HERO_COLOR.name}
                 </span>
-                <span className="label-mono text-graphite/55">{HERO_COLOR.code}</span>
+                <span className="label-mono text-graphite/70">{HERO_COLOR.code}</span>
               </figcaption>
               <div className="mt-5 h-44 sm:h-56">
                 <SwatchRamp hex={HERO_COLOR.hex} steps={7} animate className="h-full" />
               </div>
-              <div className="label-mono mt-3 flex items-center justify-between text-graphite/55">
+              <div className="label-mono mt-3 flex items-center justify-between text-graphite/70">
                 <span>In shade</span>
                 <span className="mx-4 h-px flex-1 bg-hairline-strong" aria-hidden="true" />
                 <span>In sun</span>
@@ -169,9 +171,11 @@ export default function HomePage() {
             <h2 className="max-w-[20ch] font-display text-2xl font-bold leading-tight tracking-tightest sm:text-3xl">
               Try it on a photo of your own wall.
             </h2>
+            {/* The global focus ring is graphite, which is invisible inside this dark
+                band — swap it for chalk, which reads 16.25:1 against the band. */}
             <Link
               href="/studio"
-              className="inline-flex items-center gap-3 bg-sun px-7 py-4 font-display text-sm font-bold uppercase tracking-[0.08em] text-graphite transition-colors hover:bg-chalk"
+              className="inline-flex items-center gap-3 bg-sun px-7 py-4 font-display text-sm font-bold uppercase tracking-[0.08em] text-graphite transition-colors hover:bg-chalk focus-visible:outline-chalk"
             >
               Open the Studio
               <span aria-hidden="true">→</span>

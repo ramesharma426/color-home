@@ -56,7 +56,7 @@ export function RegionList({
                 <span className="block truncate font-display text-sm font-bold tracking-tightest">
                   {region.label}
                 </span>
-                <span className="label-mono block text-graphite/60">
+                <span className="label-mono block text-graphite/70">
                   {hex ? hex.toUpperCase() : "No color yet"}
                 </span>
               </span>

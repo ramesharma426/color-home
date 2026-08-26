@@ -19,7 +19,6 @@ const config: Config = {
     extend: {
       colors: {
         proof: "#cdcdcd",
-        "proof-deep": "#b6b6b6",
         chalk: "#f7f7f7",
         graphite: "#1a1a1a",
         skylight: "#3b5578",
@@ -35,9 +34,6 @@ const config: Config = {
       },
       letterSpacing: {
         tightest: "-0.035em",
-      },
-      borderRadius: {
-        card: "3px",
       },
       maxWidth: {
         shell: "78rem",
