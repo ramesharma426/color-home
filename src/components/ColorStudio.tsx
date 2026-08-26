@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useCanvasWorker } from "@/lib/canvas/useCanvasWorker";
 import { imageBitmapToBuffer } from "@/lib/canvas/imageBitmapToBuffer";
 import type { PixelBuffer, RGBColor } from "@/lib/canvas/types";
+import { RegionList } from "./RegionList";
+import { PaletteBrowser } from "./PaletteBrowser";
+import { DownloadButton } from "./DownloadButton";
 
 export interface Region {
   id: string;
@@ -114,30 +117,9 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
         />
       </div>
       <div className="space-y-6">
-        {/* Temporary placeholder — Task 12 replaces this with RegionList,
-            PaletteBrowser, and DownloadButton once all three exist. */}
-        <ul className="text-sm text-slate-600">
-          {regions.map((region) => (
-            <li key={region.id}>
-              <button type="button" onClick={() => setActiveRegionId(region.id)}>
-                {region.label}
-                {region.id === activeRegionId ? " (active)" : ""}
-              </button>
-            </li>
-          ))}
-        </ul>
-        {activeRegionId && (
-          <input
-            type="color"
-            onChange={(event) => {
-              const hex = event.target.value;
-              const r = parseInt(hex.slice(1, 3), 16);
-              const g = parseInt(hex.slice(3, 5), 16);
-              const b = parseInt(hex.slice(5, 7), 16);
-              handleColorSelect({ r, g, b });
-            }}
-          />
-        )}
+        <RegionList regions={regions} activeRegionId={activeRegionId} onSelectRegion={setActiveRegionId} />
+        <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+        <DownloadButton canvasRef={canvasRef} />
       </div>
     </div>
   );
