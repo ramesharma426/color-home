@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useCanvasWorker } from "@/lib/canvas/useCanvasWorker";
 import { imageBitmapToBuffer } from "@/lib/canvas/imageBitmapToBuffer";
+import { computeBorderMask } from "@/lib/canvas/borderMask";
+import { hexToRgb } from "@/lib/canvas/colorMath";
 import type { PixelBuffer, RGBColor } from "@/lib/canvas/types";
 import { RegionList } from "./RegionList";
 import { PaletteBrowser } from "./PaletteBrowser";
@@ -14,9 +16,12 @@ export interface Region {
   color: RGBColor | null;
   label: string;
   recoloredData?: Uint8ClampedArray;
+  borderColor?: RGBColor | null;
+  borderRecoloredData?: Uint8ClampedArray;
 }
 
 const DEFAULT_TOLERANCE = 24;
+const BORDER_THICKNESS = 4;
 
 export function ColorStudio({ photo }: { photo: ImageBitmap }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -58,6 +63,21 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
         composed[offset + 2] = region.recoloredData[offset + 2];
         composed[offset + 3] = region.recoloredData[offset + 3];
       }
+
+      // Border pass: recomputed here rather than cached on the region since
+      // it's a cheap boolean-array pass (no HSL math). Runs after this
+      // region's own fill pass above so the border wins at the edge, while
+      // region-to-region order is unchanged from before.
+      if (!region.borderRecoloredData) continue;
+      const borderMask = computeBorderMask(region.mask, baseBuffer.width, baseBuffer.height, BORDER_THICKNESS);
+      for (let pixelIndex = 0; pixelIndex < borderMask.length; pixelIndex++) {
+        if (!borderMask[pixelIndex]) continue;
+        const offset = pixelIndex * 4;
+        composed[offset] = region.borderRecoloredData[offset];
+        composed[offset + 1] = region.borderRecoloredData[offset + 1];
+        composed[offset + 2] = region.borderRecoloredData[offset + 2];
+        composed[offset + 3] = region.borderRecoloredData[offset + 3];
+      }
     }
     ctx.putImageData(new ImageData(composed, baseBuffer.width, baseBuffer.height), 0, 0);
   }
@@ -90,6 +110,31 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
     setRegions((prev) =>
       prev.map((r) =>
         r.id === activeRegionId ? { ...r, color, recoloredData: recoloredBuffer.data } : r
+      )
+    );
+  }
+
+  async function handleBorderColorSelect(color: RGBColor | null) {
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer || !activeRegionId) return;
+
+    const region = regions.find((r) => r.id === activeRegionId);
+    if (!region) return;
+
+    if (!color) {
+      setRegions((prev) =>
+        prev.map((r) =>
+          r.id === activeRegionId ? { ...r, borderColor: null, borderRecoloredData: undefined } : r
+        )
+      );
+      return;
+    }
+
+    const borderMask = computeBorderMask(region.mask, baseBuffer.width, baseBuffer.height, BORDER_THICKNESS);
+    const recoloredBuffer = await runRecolor(baseBuffer, borderMask, color);
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === activeRegionId ? { ...r, borderColor: color, borderRecoloredData: recoloredBuffer.data } : r
       )
     );
   }
@@ -132,6 +177,31 @@ export function ColorStudio({ photo }: { photo: ImageBitmap }) {
             Step 3 of 3 — choose a color
           </h2>
           <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+          {activeRegionId && (
+            <div className="mt-4 space-y-2 border-t border-hairline-strong/60 pt-4">
+              <label className="flex items-center gap-3 text-sm text-graphite/70">
+                <input
+                  type="checkbox"
+                  checked={Boolean(regions.find((r) => r.id === activeRegionId)?.borderColor)}
+                  onChange={(event) => {
+                    if (event.target.checked) {
+                      handleBorderColorSelect({ r: 255, g: 255, b: 255 });
+                    } else {
+                      handleBorderColorSelect(null);
+                    }
+                  }}
+                />
+                <span>Add a border</span>
+              </label>
+              {regions.find((r) => r.id === activeRegionId)?.borderColor && (
+                <input
+                  type="color"
+                  onChange={(event) => handleBorderColorSelect(hexToRgb(event.target.value))}
+                  className="h-8 w-12 align-middle"
+                />
+              )}
+            </div>
+          )}
         </section>
         <DownloadButton canvasRef={canvasRef} />
       </aside>
