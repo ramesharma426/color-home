@@ -28,6 +28,7 @@ const BORDER_THICKNESS = 4;
 export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Locale }) {
   const dict = getDictionary(locale);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const baseBufferRef = useRef<PixelBuffer | null>(null);
   const [regions, setRegions] = useState<Region[]>([]);
   const [activeRegionId, setActiveRegionId] = useState<string | null>(null);
@@ -186,6 +187,37 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
   useEffect(render, [regions]);
 
+  // Draw a highlight ring around the currently active region on a separate
+  // overlay canvas stacked over the main one, so the selection is visible on
+  // screen without ever being baked into the composited image that
+  // DownloadButton reads from canvasRef.
+  useEffect(() => {
+    const overlay = overlayCanvasRef.current;
+    const baseBuffer = baseBufferRef.current;
+    if (!overlay || !baseBuffer) return;
+
+    overlay.width = baseBuffer.width;
+    overlay.height = baseBuffer.height;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    if (!activeRegion) return;
+
+    const ring = computeBorderMask(activeRegion.mask, baseBuffer.width, baseBuffer.height, 2);
+    const imageData = ctx.createImageData(overlay.width, overlay.height);
+    for (let i = 0; i < ring.length; i++) {
+      if (!ring[i]) continue;
+      const offset = i * 4;
+      imageData.data[offset] = 255; // bright magenta highlight — distinct from any
+      imageData.data[offset + 1] = 0; // paint color a user could realistically pick,
+      imageData.data[offset + 2] = 255; // so it always reads as "this is UI, not paint"
+      imageData.data[offset + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }, [regions, activeRegionId]);
+
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
       <div className="self-start border border-hairline-strong/60 bg-chalk p-3 sm:p-4">
@@ -217,7 +249,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
             <span className="w-10 tabular-nums text-graphite">{zoom}%</span>
           </label>
         </div>
-        <div className="overflow-auto border border-hairline">
+        <div className="relative overflow-auto border border-hairline">
           <canvas
             ref={canvasRef}
             onClick={handleCanvasClick}
@@ -225,6 +257,11 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
             onDrop={handleCanvasDrop}
             style={{ width: `${zoom}%`, height: "auto" }}
             className="block cursor-crosshair"
+          />
+          <canvas
+            ref={overlayCanvasRef}
+            style={{ width: `${zoom}%`, height: "auto" }}
+            className="pointer-events-none absolute left-0 top-0"
           />
         </div>
       </div>
