@@ -36,6 +36,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [zoom, setZoom] = useState(100); // percent, 50-200
   const [borderPickerOpen, setBorderPickerOpen] = useState(false);
   const { runFloodFill, runRecolor } = useCanvasWorker();
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; dragged: boolean } | null>(null);
+  const suppressNextClickRef = useRef(false);
+  const [isPanning, setIsPanning] = useState(false);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -97,7 +101,53 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     ctx.putImageData(new ImageData(composed, baseBuffer.width, baseBuffer.height), 0, 0);
   }
 
+  function handleWrapperPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return; // left button only — don't interfere with right-click
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    panStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: wrapper.scrollLeft,
+      scrollTop: wrapper.scrollTop,
+      dragged: false,
+    };
+  }
+
+  function handleWrapperPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const pan = panStateRef.current;
+    const wrapper = wrapperRef.current;
+    if (!pan || !wrapper) return;
+
+    const dx = event.clientX - pan.startX;
+    const dy = event.clientY - pan.startY;
+
+    if (!pan.dragged && Math.hypot(dx, dy) > 4) {
+      pan.dragged = true;
+      setIsPanning(true);
+    }
+
+    if (pan.dragged) {
+      wrapper.scrollLeft = pan.scrollLeft - dx;
+      wrapper.scrollTop = pan.scrollTop - dy;
+    }
+  }
+
+  function handleWrapperPointerUp() {
+    if (panStateRef.current?.dragged) {
+      // A real pan happened — swallow the click that's about to fire on the
+      // canvas underneath, so panning never accidentally creates a new region.
+      suppressNextClickRef.current = true;
+    }
+    panStateRef.current = null;
+    setIsPanning(false);
+  }
+
   async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      return;
+    }
     const canvas = canvasRef.current;
     const baseBuffer = baseBufferRef.current;
     if (!canvas || !baseBuffer) return;
@@ -288,7 +338,14 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
               <span className="w-10 tabular-nums text-graphite">{zoom}%</span>
             </label>
           </div>
-          <div className="relative overflow-auto border border-hairline">
+          <div
+            ref={wrapperRef}
+            className="relative overflow-auto border border-hairline"
+            onPointerDown={handleWrapperPointerDown}
+            onPointerMove={handleWrapperPointerMove}
+            onPointerUp={handleWrapperPointerUp}
+            onPointerLeave={handleWrapperPointerUp}
+          >
             <canvas
               ref={canvasRef}
               onClick={handleCanvasClick}
@@ -296,7 +353,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleCanvasDrop}
               style={{ width: `${zoom}%`, height: "auto" }}
-              className="block cursor-crosshair"
+              className={isPanning ? "block cursor-grabbing" : "block cursor-crosshair"}
             />
             <canvas
               ref={overlayCanvasRef}
