@@ -129,15 +129,32 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     };
   }, []);
 
-  // Escape discards an in-progress Polygonal Lasso without committing a region.
+  // Escape discards an in-progress Polygonal Lasso without committing a
+  // region. Backspace undoes only the most recently placed vertex, so a
+  // misplaced point doesn't force restarting the whole shape.
   useEffect(() => {
+    function isTypingTarget(target: EventTarget | null) {
+      const tag = (target as HTMLElement | null)?.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA";
+    }
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       polygonPointsRef.current = [];
       setPolygonPreview([]);
     }
+    function handleBackspace(event: KeyboardEvent) {
+      if (event.key !== "Backspace" || isTypingTarget(event.target)) return;
+      if (polygonPointsRef.current.length === 0) return;
+      event.preventDefault(); // outside a text field, Backspace can trigger browser back-navigation
+      polygonPointsRef.current = polygonPointsRef.current.slice(0, -1);
+      setPolygonPreview([...polygonPointsRef.current]);
+    }
     window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
+    window.addEventListener("keydown", handleBackspace);
+    return () => {
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("keydown", handleBackspace);
+    };
   }, []);
 
   function render() {
@@ -367,7 +384,11 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     );
   }
 
-  const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
+  // A fixed buffer-space radius would shrink on screen as the user zooms
+  // out (very likely while placing several corners of a shape), making the
+  // close target increasingly hard to hit. Scaling by zoom keeps the actual
+  // on-screen target a consistent ~16px regardless of zoom level.
+  const polygonCloseRadius = 1600 / zoom;
 
   function handlePolygonClick(event: React.MouseEvent<HTMLCanvasElement>) {
     if (activeTool !== "polygonLasso" || isSpacePanningRef.current) return;
@@ -378,7 +399,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (points.length >= 3) {
       const start = points[0];
       const distanceToStart = Math.hypot(point.x - start.x, point.y - start.y);
-      if (distanceToStart <= POLYGON_CLOSE_RADIUS) {
+      if (distanceToStart <= polygonCloseRadius) {
         finishPolygon(event.ctrlKey || event.metaKey);
         return;
       }
@@ -662,6 +683,15 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
           ctx!.stroke();
         }
 
+        if (showPreview) {
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#3b5578"; // skylight — same helper-overlay blue as the Brush/Eraser size circle
+          ctx!.lineWidth = 1;
+          ctx!.beginPath();
+          ctx!.arc(polygonPreview[0].x, polygonPreview[0].y, polygonCloseRadius, 0, Math.PI * 2);
+          ctx!.stroke();
+        }
+
         if (showSizeCursor && cursorPos) {
           const radius = activeTool === "brush" ? brushSize : eraserSize;
           ctx!.setLineDash([]);
@@ -688,7 +718,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
     animationFrameId = requestAnimationFrame(drawFrame);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize, isDrawingLasso]);
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize, isDrawingLasso, zoom]);
 
   function canvasCursorClassName(): string {
     if (isPanning) return "block cursor-grabbing";
