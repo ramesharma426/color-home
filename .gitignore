@@ -3,6 +3,7 @@ node_modules/
 out/
 .idea/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 .worktrees/
 .superpowers/
 *.log
