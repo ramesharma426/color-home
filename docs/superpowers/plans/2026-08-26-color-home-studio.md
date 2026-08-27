@@ -4196,6 +4196,423 @@ git commit -m "feat: wire the Selection Brush tool"
 
 ---
 
+## Plan expansion (2026-08-27): region management + selection-color polish, per owner requests mid-execution
+
+Owner asked for four small, independent additions while Tasks 32-38's final review/fix wave was in flight: a way to deselect the active region, the marching-ants outline in black instead of magenta, a delete button per region, and a pencil/rename icon per region. All four are small edits to `RegionList.tsx`/`ColorStudio.tsx` of the same shape (region-list UI + one wiring callback each), batched into one task per this plan's batching convention for same-shape work. A larger fifth request — an Eraser tool that subtracts from a region's mask (so a reapplied color doesn't repaint the erased area) — is comparable in scope to Task 38 (Brush) and gets its own task (40).
+
+### Task 39: Deselect, black selection outline, delete region, rename region
+
+**Files:**
+- Modify: `src/components/RegionList.tsx`
+- Modify: `src/components/ColorStudio.tsx`
+- Modify: `src/dictionaries/types.ts`, `src/dictionaries/en.ts`, `src/dictionaries/ne.ts` (2 new keys: delete/rename aria-labels)
+
+**Interfaces:**
+- `RegionList`'s props change: `onSelectRegion: (id: string) => void` becomes `onSelectRegion: (id: string | null) => void` (clicking the already-active region deselects it); two new required props, `onDeleteRegion: (id: string) => void` and `onRenameRegion: (id: string, label: string) => void`.
+
+- [ ] **Step 1: Add the 2 dictionary keys**
+
+In `src/dictionaries/types.ts`'s `studio` block, add:
+
+```ts
+    regionDeleteLabel: string;
+    regionRenameLabel: string;
+```
+
+In `src/dictionaries/en.ts`'s `studio` object, add:
+
+```ts
+    regionDeleteLabel: "Delete",
+    regionRenameLabel: "Rename",
+```
+
+In `src/dictionaries/ne.ts`'s `studio` object, add:
+
+```ts
+    regionDeleteLabel: "मेटाउनुहोस्",
+    regionRenameLabel: "नाम बदल्नुहोस्",
+```
+
+- [ ] **Step 2: Rewrite `RegionList.tsx`**
+
+Replace the full file with:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import type { Region } from "./ColorStudio";
+import { rgbToHex } from "@/lib/canvas/colorMath";
+import { SwatchRamp } from "./SwatchRamp";
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
+
+export function RegionList({
+  regions,
+  activeRegionId,
+  onSelectRegion,
+  onDeleteRegion,
+  onRenameRegion,
+  locale,
+}: {
+  regions: Region[];
+  activeRegionId: string | null;
+  onSelectRegion: (id: string | null) => void;
+  onDeleteRegion: (id: string) => void;
+  onRenameRegion: (id: string, label: string) => void;
+  locale: Locale;
+}) {
+  const dict = getDictionary(locale);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftLabel, setDraftLabel] = useState("");
+
+  if (regions.length === 0) {
+    return (
+      <p className="border border-dashed border-hairline-strong bg-chalk px-4 py-5 text-sm leading-relaxed text-graphite/65">
+        {dict.studio.regionsEmptyState}
+      </p>
+    );
+  }
+
+  function commitRename(id: string) {
+    const trimmed = draftLabel.trim();
+    if (trimmed) onRenameRegion(id, trimmed);
+    setEditingId(null);
+  }
+
+  return (
+    <ul className="space-y-1.5">
+      {regions.map((region) => {
+        const isActive = region.id === activeRegionId;
+        const hex = region.color ? rgbToHex(region.color) : null;
+        const isEditing = editingId === region.id;
+
+        return (
+          <li key={region.id}>
+            <div
+              className={`flex w-full items-center gap-3 border px-3 py-2.5 transition-colors ${
+                isActive
+                  ? "border-skylight bg-chalk shadow-[inset_3px_0_0_0_#3b5578]"
+                  : "border-hairline-strong/60 bg-chalk/60 hover:border-graphite/40"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onSelectRegion(isActive ? null : region.id)}
+                aria-pressed={isActive}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+              >
+                <span className="h-7 w-9 shrink-0 overflow-hidden border border-graphite/15">
+                  {hex ? (
+                    <SwatchRamp hex={hex} steps={3} className="h-full" />
+                  ) : (
+                    <span
+                      className="block h-full w-full"
+                      style={{
+                        backgroundImage:
+                          "repeating-linear-gradient(45deg, #dcdcdc 0 4px, #f7f7f7 4px 8px)",
+                      }}
+                    />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  {isEditing ? (
+                    <input
+                      autoFocus
+                      value={draftLabel}
+                      onChange={(event) => setDraftLabel(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") commitRename(region.id);
+                        if (event.key === "Escape") setEditingId(null);
+                      }}
+                      onBlur={() => commitRename(region.id)}
+                      className="w-full border border-skylight bg-white px-1 py-0.5 font-display text-sm font-bold tracking-tightest"
+                    />
+                  ) : (
+                    <span className="block truncate font-display text-sm font-bold tracking-tightest">
+                      {region.label}
+                    </span>
+                  )}
+                  <span className="label-mono block text-graphite/70">
+                    {hex ? hex.toUpperCase() : dict.studio.regionNoColorLabel}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                title={dict.studio.regionRenameLabel}
+                aria-label={dict.studio.regionRenameLabel}
+                onClick={() => {
+                  setDraftLabel(region.label);
+                  setEditingId(region.id);
+                }}
+                className="shrink-0 px-1 text-graphite/50 hover:text-graphite"
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                title={dict.studio.regionDeleteLabel}
+                aria-label={dict.studio.regionDeleteLabel}
+                onClick={() => onDeleteRegion(region.id)}
+                className="shrink-0 px-1 text-graphite/50 hover:text-signal"
+              >
+                ✕
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+```
+
+- [ ] **Step 3: Add delete/rename handlers in `ColorStudio.tsx` and pass the new props**
+
+Add these two handlers near `handleColorSelect`:
+
+```tsx
+function handleDeleteRegion(id: string) {
+  setRegions((prev) => prev.filter((r) => r.id !== id));
+  if (activeRegionId === id) setActiveRegionId(null);
+}
+
+function handleRenameRegion(id: string, label: string) {
+  setRegions((prev) => prev.map((r) => (r.id === id ? { ...r, label } : r)));
+}
+```
+
+Find the existing `<RegionList ... />` usage and add the two new props:
+
+```tsx
+<RegionList
+  regions={regions}
+  activeRegionId={activeRegionId}
+  onSelectRegion={setActiveRegionId}
+  onDeleteRegion={handleDeleteRegion}
+  onRenameRegion={handleRenameRegion}
+  locale={locale}
+/>
+```
+
+(`setActiveRegionId` already accepts `string | null`, so it satisfies `RegionList`'s widened `onSelectRegion` prop type with no change needed at this call site.)
+
+- [ ] **Step 4: Change the marching-ants and rubber-band-preview color from magenta to black**
+
+There are exactly two occurrences of `"#ff00ff"` in `ColorStudio.tsx` (the marching-ants stroke and the Polygonal Lasso rubber-band preview stroke, both inside the unified overlay-canvas effect from Tasks 34/37). Change both to `"#000000"`, and update the adjacent comment from "bright magenta — distinct from any paint color a user could realistically pick" to "black — distinct from any paint color a user could realistically pick" (still true: no catalog color in this app is pure black, per the existing Berger/Asian Paints catalogue data).
+
+- [ ] **Step 5: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select a region, confirm the marching-ants outline is now black, not magenta. Start a Polygonal Lasso and confirm its rubber-band preview line is also black.
+- Click the active region's row again in the sidebar list — confirm it deselects (no region highlighted, color pickers disabled again).
+- Click the pencil icon on a region, edit its name, press Enter — confirm the new name persists and is reflected in the list. Try Escape mid-edit — confirm it discards the edit.
+- Click the delete (✕) icon on a region — confirm it's removed from the list and from the canvas (its paint disappears). Delete the currently active region specifically — confirm the sidebar cleanly returns to its "no region selected" state (color pickers disabled, border checkbox gone) with no stale state.
+
+- [ ] **Step 6: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 46/46 (unchanged; this task is UI/interaction wiring, no new unit-testable pure logic).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/components/RegionList.tsx src/components/ColorStudio.tsx src/dictionaries/types.ts src/dictionaries/en.ts src/dictionaries/ne.ts
+git commit -m "feat: add region deselect/delete/rename, change selection outline to black"
+```
+
+---
+
+### Task 40: Eraser tool — subtracts from a region's mask, persists through recolor
+
+**Added per explicit owner request:** "have an eraser that can be made small or big, if we click then delete the region paint only and if we reapply the color it remembers that the region color was deleted and do not apply color there." This means erasing must shrink the region's actual `mask` (not just visually clear pixels for one render) — otherwise reselecting a color would recompute from the untouched mask and repaint over the erased spot.
+
+**Files:**
+- Modify: `src/components/SelectionToolbar.tsx` (add a 6th tool)
+- Modify: `src/components/ColorStudio.tsx`
+- Modify: `src/dictionaries/types.ts`, `src/dictionaries/en.ts`, `src/dictionaries/ne.ts` (2 new keys: tool label, size-slider label)
+
+**Interfaces:**
+- Consumes: `paintBrushStroke` from `src/lib/canvas/brushMask.ts` (Task 33) — reused as-is to compute the eraser's stamped-circle stroke shape; the subtraction itself is new logic in `ColorStudio.tsx`, not a new lib function (stamping circles is identical between "add to mask" and "remove from mask", only the final combine step differs).
+- `SelectionTool` extends to `"magicWand" | "lasso" | "polygonLasso" | "brush" | "eraser" | "hand"`.
+
+- [ ] **Step 1: Add the 2 dictionary keys**
+
+In `src/dictionaries/types.ts`'s `studio` block, add:
+
+```ts
+    toolEraserLabel: string;
+    eraserSizeLabel: string;
+```
+
+In `src/dictionaries/en.ts`'s `studio` object, add:
+
+```ts
+    toolEraserLabel: "Eraser",
+    eraserSizeLabel: "Eraser size",
+```
+
+In `src/dictionaries/ne.ts`'s `studio` object, add:
+
+```ts
+    toolEraserLabel: "इरेजर",
+    eraserSizeLabel: "इरेजर साइज",
+```
+
+- [ ] **Step 2: Add the Eraser tool to `SelectionToolbar.tsx`**
+
+Change the `SelectionTool` type to:
+
+```ts
+export type SelectionTool = "magicWand" | "lasso" | "polygonLasso" | "brush" | "eraser" | "hand";
+```
+
+Add a new entry to the `tools` array, positioned right after `brush` and before `hand`:
+
+```ts
+{ id: "eraser", label: dict.studio.toolEraserLabel, glyph: "⌫" },
+```
+
+- [ ] **Step 3: Add eraser state and pointer handlers in `ColorStudio.tsx`**
+
+Near `brushPathRef`/`brushSize`, add:
+
+```tsx
+const eraserPathRef = useRef<Point[]>([]);
+const [eraserSize, setEraserSize] = useState(15);
+```
+
+Add these handlers near the brush handlers, following the exact same Spacebar-priority-guard and pointer-capture pattern established for Lasso/Brush in Tasks 36/38 and the final-review fix wave:
+
+```tsx
+function handleEraserPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "eraser" || event.button !== 0 || isSpacePanningRef.current) return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+  eraserPathRef.current = [point];
+  event.currentTarget.setPointerCapture(event.pointerId);
+}
+
+function handleEraserPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "eraser" || eraserPathRef.current.length === 0 || isSpacePanningRef.current) return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+  eraserPathRef.current.push(point);
+}
+
+async function handleEraserPointerUp() {
+  if (activeTool !== "eraser" || eraserPathRef.current.length === 0) return;
+  const path = eraserPathRef.current;
+  eraserPathRef.current = [];
+
+  const baseBuffer = baseBufferRef.current;
+  if (!baseBuffer || !activeRegionId) return; // nothing to erase without a selected region
+
+  const activeRegion = regions.find((r) => r.id === activeRegionId);
+  if (!activeRegion) return;
+
+  // Stamp the eraser's circles into an empty mask (reusing paintBrushStroke's
+  // circle-stamping — identical math to the Brush tool), then SUBTRACT that
+  // stroke from the region's real mask (AND NOT), rather than adding to it.
+  // This is what makes erasing "remembered": the pixels are permanently gone
+  // from region.mask, so any future recolor recomputes from the shrunk mask
+  // and never repaints them, unlike a purely-visual undo of the last paint.
+  const emptyMask = new Uint8Array(baseBuffer.width * baseBuffer.height);
+  const eraserStroke = paintBrushStroke(emptyMask, baseBuffer.width, baseBuffer.height, path, eraserSize);
+
+  const shrunkMask = new Uint8Array(activeRegion.mask.length);
+  for (let i = 0; i < shrunkMask.length; i++) {
+    shrunkMask[i] = activeRegion.mask[i] && !eraserStroke[i] ? 1 : 0;
+  }
+
+  let recoloredData = activeRegion.recoloredData;
+  if (activeRegion.color) {
+    const recoloredBuffer = await runRecolor(baseBuffer, shrunkMask, activeRegion.color);
+    recoloredData = recoloredBuffer.data;
+  }
+
+  setRegions((prev) =>
+    prev.map((r) => (r.id === activeRegionId ? { ...r, mask: shrunkMask, recoloredData } : r))
+  );
+}
+```
+
+Note this deliberately does NOT go through `commitToolMask` — that helper's whole job is "create a new region, or OR-merge into one," and erasing is neither; it mutates the active region's mask in place via AND-NOT. There is no "erase with no active region" case to support (nothing to erase), unlike the other tools which can create a fresh region from nothing.
+
+- [ ] **Step 4: Add the eraser-size slider, shown only while Eraser is active**
+
+Alongside the brush-size slider (Task 38) in the controls row:
+
+```tsx
+{activeTool === "eraser" && (
+  <label className="label-mono flex items-center gap-3 text-graphite/70">
+    <span>{dict.studio.eraserSizeLabel}</span>
+    <input
+      type="range"
+      min={4}
+      max={60}
+      value={eraserSize}
+      onChange={(event) => setEraserSize(Number(event.target.value))}
+      className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+    />
+    <span className="w-6 tabular-nums text-graphite">{eraserSize}</span>
+  </label>
+)}
+```
+
+- [ ] **Step 5: Wire the eraser pointer handlers onto the canvas**
+
+Add alongside the existing composed Lasso/Brush pointer handlers on the canvas:
+
+```tsx
+onPointerDown={(event) => {
+  handleLassoPointerDown(event);
+  handleBrushPointerDown(event);
+  handleEraserPointerDown(event);
+}}
+onPointerMove={(event) => {
+  handleLassoPointerMove(event);
+  handleBrushPointerMove(event);
+  handleEraserPointerMove(event);
+}}
+onPointerUp={(event) => {
+  handleLassoPointerUp(event);
+  handleBrushPointerUp(event);
+  handleEraserPointerUp();
+}}
+onPointerCancel={(event) => {
+  handleLassoPointerUp(event);
+  handleBrushPointerUp(event);
+  handleEraserPointerUp();
+}}
+```
+
+- [ ] **Step 6: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select a region, apply a color, select the Eraser tool, drag across part of the painted region — confirm that part reverts to the original photo (no paint), while the rest of the region stays painted.
+- With that same region still active (partially erased), pick a *different* color from the palette — confirm the erased area does NOT get repainted; only the still-selected (non-erased) part of the mask picks up the new color. This is the "remembers" requirement — verify it specifically, not just that erasing itself works.
+- Adjust the eraser-size slider and confirm subsequent erase strokes are thicker/thinner accordingly.
+- Try erasing with no region selected — confirm it's a safe no-op (nothing happens, no crash).
+- Confirm the marching-ants outline correctly shrinks to match the region's new (post-erase) mask shape.
+- Confirm Magic Wand, Lasso, Polygonal Lasso, Brush, and Hand/Spacebar-panning are all unaffected when Eraser is not the active tool.
+
+- [ ] **Step 7: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 46/46 (unchanged; this task reuses Task 33's already-tested `paintBrushStroke`, and its own subtraction logic is simple inline mask arithmetic consistent with how merge logic elsewhere in this file has never been separately unit-tested).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/components/SelectionToolbar.tsx src/components/ColorStudio.tsx src/dictionaries/types.ts src/dictionaries/en.ts src/dictionaries/ne.ts
+git commit -m "feat: add Eraser tool that subtracts from a region's mask"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
