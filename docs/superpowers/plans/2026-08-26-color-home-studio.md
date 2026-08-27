@@ -4843,6 +4843,106 @@ git commit -m "feat: hide native cursor for Brush/Eraser, show hand cursor durin
 
 ---
 
+## Plan expansion (2026-08-27): live Lasso drag preview, closing a gap flagged by the final review
+
+**Context:** the final whole-batch review of Tasks 32-38 found that the spec called for a live preview line while dragging the Lasso (drawn as the path accumulates), but the plan never implemented it — a Lasso drag currently shows nothing at all until release, unlike Polygonal Lasso, which does get a live rubber-band line. That finding was deliberately parked as a scope gap rather than fixed at the time. The owner asked about the Lasso tool's design, surfacing this same gap — implementing it now.
+
+### Task 43: Live preview line while dragging the Lasso
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally.
+
+- [ ] **Step 1: Add a "show Lasso preview" condition to the existing unified overlay effect**
+
+This overlay canvas already has exactly one render authority — the effect that draws the marching-ants outline, the Polygonal Lasso rubber-band preview, and (since Task 41) the Brush/Eraser size circle. Extend it again rather than adding a competing effect.
+
+Find (currently):
+
+```tsx
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+    const showSizeCursor = (activeTool === "brush" || activeTool === "eraser") && cursorPos !== null;
+
+    if (!activeRegion && !showPreview && !showSizeCursor) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      return;
+    }
+```
+
+Replace with:
+
+```tsx
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+    const showSizeCursor = (activeTool === "brush" || activeTool === "eraser") && cursorPos !== null;
+    const showLassoPreview = activeTool === "lasso" && isDrawingLasso;
+
+    if (!activeRegion && !showPreview && !showSizeCursor && !showLassoPreview) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      return;
+    }
+```
+
+- [ ] **Step 2: Draw the live path inside `drawFrame`, reading `lassoPathRef` fresh each frame**
+
+`lassoPathRef` is a ref, not React state — it's deliberately NOT part of the effect's dependency array (adding it would require putting every accumulated point into state, which would re-render on every pointermove during a drag, exactly the kind of avoidable cost Task 34's final-review fix already eliminated for the marching-ants contour). Instead, since `drawFrame` re-runs continuously via its own `requestAnimationFrame` loop while `showLassoPreview` is true, it can simply read `lassoPathRef.current`'s latest value on every tick with no extra re-renders needed.
+
+Add this block after the existing `if (showSizeCursor && cursorPos) { ... }` block, still inside `drawFrame`:
+
+```tsx
+        if (showLassoPreview && lassoPathRef.current.length > 0) {
+          const path = lassoPathRef.current;
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#000000";
+          ctx!.lineWidth = 1;
+          ctx!.beginPath();
+          ctx!.moveTo(path[0].x, path[0].y);
+          for (let i = 1; i < path.length; i++) ctx!.lineTo(path[i].x, path[i].y);
+          ctx!.stroke();
+        }
+```
+
+- [ ] **Step 3: Add `isDrawingLasso` to the effect's dependency array**
+
+The loop needs to actually START when a Lasso drag begins (previously, with no active region and no polygon preview, the loop wouldn't run at all — the same class of gap Task 41's `showSizeCursor` addition already fixed for the size circle). Change the effect's dependency array from:
+
+```tsx
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize]);
+```
+
+to:
+
+```tsx
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize, isDrawingLasso]);
+```
+
+(`isDrawingLasso` already exists as state, set `true`/`false` by `handleLassoPointerDown`/`handleLassoPointerUp` — this task makes it load-bearing for the first time, beyond the decorative role a prior review noted it had.)
+
+- [ ] **Step 4: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Lasso, drag a freeform loop — confirm a solid black line traces the path live as you drag, not just after releasing.
+- Release — confirm the live preview disappears and the finished region (with its marching-ants outline) appears in its place, with no visible flicker or gap between the two.
+- Start a Lasso drag with NO region currently active and NO region existing yet — confirm the live preview still appears (this is the scenario the dependency-array/early-return changes specifically target).
+- Confirm Magic Wand, Polygonal Lasso, Brush, Eraser, and Hand/Spacebar-panning are all completely unaffected — Polygonal Lasso's own rubber-band preview and Brush/Eraser's size circle should look and behave exactly as before.
+- Drag a Lasso stroke while a DIFFERENT region is already active and showing its marching-ants outline — confirm both the ants and the live Lasso preview render correctly together with no clobbering (this is exactly the class of bug a prior fix eliminated for Polygonal Lasso; confirm it doesn't reappear here).
+
+- [ ] **Step 5: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 46/46 (unchanged; this is a purely visual addition, no new unit-testable pure logic).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: show a live preview line while dragging the Lasso tool"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
