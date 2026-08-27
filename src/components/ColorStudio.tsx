@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useCanvasWorker } from "@/lib/canvas/useCanvasWorker";
 import { imageBitmapToBuffer } from "@/lib/canvas/imageBitmapToBuffer";
 import { computeBorderMask } from "@/lib/canvas/borderMask";
+import { contours } from "d3-contour";
 import type { PixelBuffer, RGBColor } from "@/lib/canvas/types";
 import { RegionList } from "./RegionList";
 import { PaletteBrowser } from "./PaletteBrowser";
@@ -275,10 +276,14 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
   useEffect(render, [regions]);
 
-  // Draw a highlight ring around the currently active region on a separate
-  // overlay canvas stacked over the main one, so the selection is visible on
-  // screen without ever being baked into the composited image that
-  // DownloadButton reads from canvasRef.
+  // Draw an animated dashed "marching ants" outline around the currently
+  // active region on a separate overlay canvas stacked over the main one,
+  // so the selection is visible on screen without ever being baked into the
+  // composited image that DownloadButton reads from canvasRef. d3-contour
+  // (not a hand-rolled tracer) is used because it correctly outlines every
+  // disconnected patch of a region — a Ctrl+click merge (Task 28) can leave
+  // one region spanning several unconnected patches, and a single-component
+  // tracer would silently miss all but the first.
   useEffect(() => {
     const overlay = overlayCanvasRef.current;
     const baseBuffer = baseBufferRef.current;
@@ -288,22 +293,45 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     overlay.height = baseBuffer.height;
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
 
     const activeRegion = regions.find((r) => r.id === activeRegionId);
-    if (!activeRegion) return;
-
-    const ring = computeBorderMask(activeRegion.mask, baseBuffer.width, baseBuffer.height, 2);
-    const imageData = ctx.createImageData(overlay.width, overlay.height);
-    for (let i = 0; i < ring.length; i++) {
-      if (!ring[i]) continue;
-      const offset = i * 4;
-      imageData.data[offset] = 255; // bright magenta highlight — distinct from any
-      imageData.data[offset + 1] = 0; // paint color a user could realistically pick,
-      imageData.data[offset + 2] = 255; // so it always reads as "this is UI, not paint"
-      imageData.data[offset + 3] = 255;
+    if (!activeRegion) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      return;
     }
-    ctx.putImageData(imageData, 0, 0);
+
+    const generator = contours().size([baseBuffer.width, baseBuffer.height]).smooth(false);
+    const multiPolygon = generator.contour(Array.from(activeRegion.mask), 0.5);
+
+    let animationFrameId: number;
+    let lastFrameTime = 0;
+    let dashOffset = 0;
+    const FRAME_INTERVAL_MS = 50; // ~20fps — plenty smooth, cheap to keep running
+
+    function drawFrame(time: number) {
+      if (time - lastFrameTime >= FRAME_INTERVAL_MS) {
+        lastFrameTime = time;
+        dashOffset = (dashOffset + 1) % 8;
+
+        ctx!.clearRect(0, 0, overlay!.width, overlay!.height);
+        ctx!.setLineDash([4, 4]);
+        ctx!.lineDashOffset = -dashOffset;
+        ctx!.strokeStyle = "#ff00ff"; // bright magenta — distinct from any paint
+        ctx!.lineWidth = 1; // color a user could realistically pick
+        for (const polygon of multiPolygon.coordinates) {
+          for (const ring of polygon) {
+            ctx!.beginPath();
+            ctx!.moveTo(ring[0][0], ring[0][1]);
+            for (let i = 1; i < ring.length; i++) ctx!.lineTo(ring[i][0], ring[i][1]);
+            ctx!.stroke();
+          }
+        }
+      }
+      animationFrameId = requestAnimationFrame(drawFrame);
+    }
+
+    animationFrameId = requestAnimationFrame(drawFrame);
+    return () => cancelAnimationFrame(animationFrameId);
   }, [regions, activeRegionId]);
 
   return (
