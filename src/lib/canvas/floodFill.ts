@@ -23,25 +23,22 @@ export function floodFill(
     return { r: data[offset], g: data[offset + 1], b: data[offset + 2] };
   };
 
-  const seedIndex = seedY * width + seedX;
-  const seedColor = pixelAt(seedIndex);
-
-  const withinTolerance = (index: number) => {
-    const { r, g, b } = pixelAt(index);
-    const dr = r - seedColor.r;
-    const dg = g - seedColor.g;
-    const db = b - seedColor.b;
+  const withinTolerance = (a: { r: number; g: number; b: number }, index: number) => {
+    const b = pixelAt(index);
+    const dr = a.r - b.r;
+    const dg = a.g - b.g;
+    const db = a.b - b.b;
     return dr * dr + dg * dg + db * db <= toleranceSquared;
   };
 
-  const stack: number[] = [seedIndex];
+  const seedIndex = seedY * width + seedX;
+  mask[seedIndex] = 1;
   visited[seedIndex] = 1;
+  const stack: number[] = [seedIndex];
 
   while (stack.length > 0) {
     const index = stack.pop()!;
-    if (!withinTolerance(index)) continue;
-
-    mask[index] = 1;
+    const currentColor = pixelAt(index); // compare against THIS pixel, not the seed — this is the fix
     const x = index % width;
     const y = Math.floor(index / width);
 
@@ -57,7 +54,11 @@ export function floodFill(
       const neighborIndex = ny * width + nx;
       if (visited[neighborIndex]) continue;
       visited[neighborIndex] = 1;
-      stack.push(neighborIndex);
+
+      if (withinTolerance(currentColor, neighborIndex)) {
+        mask[neighborIndex] = 1;
+        stack.push(neighborIndex);
+      }
     }
   }
 
