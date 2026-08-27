@@ -77,6 +77,7 @@ export interface Dictionary {
     toolPolygonLassoLabel: string;
     toolBrushLabel: string;
     toolHandLabel: string;
+    brushSizeLabel: string;
   };
   colors: {
     eyebrow: string;

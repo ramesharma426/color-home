@@ -88,6 +88,7 @@ export const en: Dictionary = {
     toolPolygonLassoLabel: "Polygonal Lasso",
     toolBrushLabel: "Selection Brush",
     toolHandLabel: "Hand (pan)",
+    brushSizeLabel: "Brush size",
   },
   colors: {
     eyebrow: "Color Library",

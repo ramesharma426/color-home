@@ -14,6 +14,7 @@ import { getDictionary } from "@/lib/dictionary";
 import type { Locale } from "@/dictionaries/types";
 import { SelectionToolbar, type SelectionTool } from "./SelectionToolbar";
 import { polygonToMask, type Point } from "@/lib/canvas/polygonMask";
+import { paintBrushStroke } from "@/lib/canvas/brushMask";
 
 export interface Region {
   id: string;
@@ -48,6 +49,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [isDrawingLasso, setIsDrawingLasso] = useState(false);
   const polygonPointsRef = useRef<Point[]>([]);
   const [polygonPreview, setPolygonPreview] = useState<Point[]>([]);
+  const brushPathRef = useRef<Point[]>([]);
+  const [brushSize, setBrushSize] = useState(15);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -211,6 +214,37 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
     const newMask = polygonToMask(path, baseBuffer.width, baseBuffer.height);
     await commitToolMask(newMask, event.ctrlKey || event.metaKey);
+  }
+
+  function handleBrushPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "brush" || event.button !== 0 || isSpacePanningRef.current) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+    brushPathRef.current = [point];
+  }
+
+  function handleBrushPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "brush" || brushPathRef.current.length === 0 || isSpacePanningRef.current) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+    brushPathRef.current.push(point);
+  }
+
+  async function handleBrushPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "brush" || brushPathRef.current.length === 0) return;
+    const path = brushPathRef.current;
+    brushPathRef.current = [];
+
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer || path.length === 0) return;
+
+    const isMerge = (event.ctrlKey || event.metaKey) && Boolean(activeRegionId);
+    const baseMask = isMerge
+      ? regions.find((r) => r.id === activeRegionId)?.mask ?? new Uint8Array(baseBuffer.width * baseBuffer.height)
+      : new Uint8Array(baseBuffer.width * baseBuffer.height);
+
+    const newMask = paintBrushStroke(baseMask, baseBuffer.width, baseBuffer.height, path, brushSize);
+    await commitToolMask(newMask, isMerge);
   }
 
   const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
@@ -493,6 +527,20 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 <span className="w-6 tabular-nums text-graphite">{tolerance}</span>
               </label>
             )}
+            {activeTool === "brush" && (
+              <label className="label-mono flex items-center gap-3 text-graphite/70">
+                <span>{dict.studio.brushSizeLabel}</span>
+                <input
+                  type="range"
+                  min={4}
+                  max={60}
+                  value={brushSize}
+                  onChange={(event) => setBrushSize(Number(event.target.value))}
+                  className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+                />
+                <span className="w-6 tabular-nums text-graphite">{brushSize}</span>
+              </label>
+            )}
             <label className="label-mono flex items-center gap-3 text-graphite/70">
               <span>{dict.studio.zoomLabel}</span>
               <input
@@ -527,9 +575,18 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 onContextMenu={handleCanvasContextMenu}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
-                onPointerDown={handleLassoPointerDown}
-                onPointerMove={handleLassoPointerMove}
-                onPointerUp={handleLassoPointerUp}
+                onPointerDown={(event) => {
+                  handleLassoPointerDown(event);
+                  handleBrushPointerDown(event);
+                }}
+                onPointerMove={(event) => {
+                  handleLassoPointerMove(event);
+                  handleBrushPointerMove(event);
+                }}
+                onPointerUp={(event) => {
+                  handleLassoPointerUp(event);
+                  handleBrushPointerUp(event);
+                }}
                 style={{ width: `${zoom}%`, height: "auto" }}
                 className={
                   isPanning

@@ -87,6 +87,7 @@ export const ne: Dictionary = {
     toolPolygonLassoLabel: "बहुभुज लासो",
     toolBrushLabel: "चयन ब्रस",
     toolHandLabel: "हात (सार्नुहोस्)",
+    brushSizeLabel: "ब्रस साइज",
   },
   colors: {
     eyebrow: "रङ पुस्तकालय",
