@@ -61,6 +61,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [brushSize, setBrushSize] = useState(15);
   const eraserPathRef = useRef<Point[]>([]);
   const [eraserSize, setEraserSize] = useState(15);
+  const [cursorPos, setCursorPos] = useState<Point | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -216,6 +217,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
       x: Math.round((event.clientX - rect.left) * scaleX),
       y: Math.round((event.clientY - rect.top) * scaleY),
     };
+  }
+
+  function handleToolCursorMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    setCursorPos(canvasPointFromEvent(event));
   }
 
   function handleLassoPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -595,8 +600,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
     const activeRegion = regions.find((r) => r.id === activeRegionId);
     const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+    const showSizeCursor = (activeTool === "brush" || activeTool === "eraser") && cursorPos !== null;
 
-    if (!activeRegion && !showPreview) {
+    if (!activeRegion && !showPreview && !showSizeCursor) {
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       return;
     }
@@ -641,13 +647,23 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
           }
           ctx!.stroke();
         }
+
+        if (showSizeCursor && cursorPos) {
+          const radius = activeTool === "brush" ? brushSize : eraserSize;
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#3b5578"; // skylight — the app's UI-accent blue, distinct from
+          ctx!.lineWidth = 1; // both the black selection outline and any paint color
+          ctx!.beginPath();
+          ctx!.arc(cursorPos.x, cursorPos.y, radius, 0, Math.PI * 2);
+          ctx!.stroke();
+        }
       }
       animationFrameId = requestAnimationFrame(drawFrame);
     }
 
     animationFrameId = requestAnimationFrame(drawFrame);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [regions, activeRegionId, polygonPreview, activeTool]);
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize]);
 
   return (
     <div className="space-y-8">
@@ -740,6 +756,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                   handleLassoPointerMove(event);
                   handleBrushPointerMove(event);
                   handleEraserPointerMove(event);
+                  handleToolCursorMove(event);
                 }}
                 onPointerUp={(event) => {
                   handleLassoPointerUp(event);
@@ -751,6 +768,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                   handleBrushPointerUp(event);
                   handleEraserPointerUp();
                 }}
+                onPointerLeave={() => setCursorPos(null)}
                 style={{ width: `${zoom}%`, height: "auto" }}
                 className={
                   isPanning
