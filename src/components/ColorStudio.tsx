@@ -614,8 +614,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const activeRegion = regions.find((r) => r.id === activeRegionId);
     const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
     const showSizeCursor = (activeTool === "brush" || activeTool === "eraser") && cursorPos !== null;
+    const showLassoPreview = activeTool === "lasso" && isDrawingLasso;
 
-    if (!activeRegion && !showPreview && !showSizeCursor) {
+    if (!activeRegion && !showPreview && !showSizeCursor && !showLassoPreview) {
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       return;
     }
@@ -670,13 +671,24 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
           ctx!.arc(cursorPos.x, cursorPos.y, radius, 0, Math.PI * 2);
           ctx!.stroke();
         }
+
+        if (showLassoPreview && lassoPathRef.current.length > 0) {
+          const path = lassoPathRef.current;
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#000000";
+          ctx!.lineWidth = 1;
+          ctx!.beginPath();
+          ctx!.moveTo(path[0].x, path[0].y);
+          for (let i = 1; i < path.length; i++) ctx!.lineTo(path[i].x, path[i].y);
+          ctx!.stroke();
+        }
       }
       animationFrameId = requestAnimationFrame(drawFrame);
     }
 
     animationFrameId = requestAnimationFrame(drawFrame);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize]);
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize, isDrawingLasso]);
 
   function canvasCursorClassName(): string {
     if (isPanning) return "block cursor-grabbing";
