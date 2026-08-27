@@ -7,6 +7,7 @@ const dict = getDictionary("ne");
 export const metadata: Metadata = {
   title: dict.meta.title,
   description: dict.meta.description,
+  icons: { icon: "/favicon.svg" },
 };
 
 const FONT_HREF =
