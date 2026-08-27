@@ -98,13 +98,41 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const x = Math.round((event.clientX - rect.left) * scaleX);
     const y = Math.round((event.clientY - rect.top) * scaleY);
 
-    const mask = await runFloodFill(baseBuffer, x, y, tolerance);
+    const newMask = await runFloodFill(baseBuffer, x, y, tolerance);
+    const isMerge = (event.ctrlKey || event.metaKey) && activeRegionId;
+
+    if (isMerge) {
+      const activeRegion = regions.find((r) => r.id === activeRegionId);
+      if (!activeRegion) return;
+
+      const mergedMask = new Uint8Array(activeRegion.mask.length);
+      for (let i = 0; i < mergedMask.length; i++) {
+        mergedMask[i] = activeRegion.mask[i] || newMask[i] ? 1 : 0;
+      }
+
+      let recoloredData = activeRegion.recoloredData;
+      if (activeRegion.color) {
+        const recoloredBuffer = await runRecolor(baseBuffer, mergedMask, activeRegion.color);
+        recoloredData = recoloredBuffer.data;
+      }
+
+      setRegions((prev) =>
+        prev.map((r) => (r.id === activeRegionId ? { ...r, mask: mergedMask, recoloredData } : r))
+      );
+      return;
+    }
+
     const id = crypto.randomUUID();
     setRegions((prev) => [
       ...prev,
-      { id, mask, color: null, label: `${dict.studio.regionLabelPrefix} ${prev.length + 1}` },
+      { id, mask: newMask, color: null, label: `${dict.studio.regionLabelPrefix} ${prev.length + 1}` },
     ]);
     setActiveRegionId(id);
+  }
+
+  async function handleCanvasContextMenu(event: React.MouseEvent<HTMLCanvasElement>) {
+    event.preventDefault(); // suppress the browser's context menu
+    await handleCanvasClick(event); // identical behavior to a plain left-click — always a new region
   }
 
   async function handleCanvasDrop(event: React.DragEvent<HTMLCanvasElement>) {
@@ -253,6 +281,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
           <canvas
             ref={canvasRef}
             onClick={handleCanvasClick}
+            onContextMenu={handleCanvasContextMenu}
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleCanvasDrop}
             style={{ width: `${zoom}%`, height: "auto" }}
