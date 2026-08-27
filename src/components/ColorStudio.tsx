@@ -59,6 +59,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [polygonPreview, setPolygonPreview] = useState<Point[]>([]);
   const brushPathRef = useRef<Point[]>([]);
   const [brushSize, setBrushSize] = useState(15);
+  const eraserPathRef = useRef<Point[]>([]);
+  const [eraserSize, setEraserSize] = useState(15);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -294,6 +296,57 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
     const newMask = paintBrushStroke(baseMask, baseBuffer.width, baseBuffer.height, path, brushSize);
     await commitToolMask(newMask, ctrlOrMeta);
+  }
+
+  function handleEraserPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "eraser" || event.button !== 0 || isSpacePanningRef.current) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+    eraserPathRef.current = [point];
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleEraserPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "eraser" || eraserPathRef.current.length === 0 || isSpacePanningRef.current) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+    eraserPathRef.current.push(point);
+  }
+
+  async function handleEraserPointerUp() {
+    if (activeTool !== "eraser" || eraserPathRef.current.length === 0) return;
+    const path = eraserPathRef.current;
+    eraserPathRef.current = [];
+
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer || !activeRegionId) return; // nothing to erase without a selected region
+
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    if (!activeRegion) return;
+
+    // Stamp the eraser's circles into an empty mask (reusing paintBrushStroke's
+    // circle-stamping — identical math to the Brush tool), then SUBTRACT that
+    // stroke from the region's real mask (AND NOT), rather than adding to it.
+    // This is what makes erasing "remembered": the pixels are permanently gone
+    // from region.mask, so any future recolor recomputes from the shrunk mask
+    // and never repaints them, unlike a purely-visual undo of the last paint.
+    const emptyMask = new Uint8Array(baseBuffer.width * baseBuffer.height);
+    const eraserStroke = paintBrushStroke(emptyMask, baseBuffer.width, baseBuffer.height, path, eraserSize);
+
+    const shrunkMask = new Uint8Array(activeRegion.mask.length);
+    for (let i = 0; i < shrunkMask.length; i++) {
+      shrunkMask[i] = activeRegion.mask[i] && !eraserStroke[i] ? 1 : 0;
+    }
+
+    let recoloredData = activeRegion.recoloredData;
+    if (activeRegion.color) {
+      const recoloredBuffer = await runRecolor(baseBuffer, shrunkMask, activeRegion.color);
+      recoloredData = recoloredBuffer.data;
+    }
+
+    setRegions((prev) =>
+      prev.map((r) => (r.id === activeRegionId ? { ...r, mask: shrunkMask, recoloredData } : r))
+    );
   }
 
   const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
@@ -630,6 +683,20 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 <span className="w-6 tabular-nums text-graphite">{brushSize}</span>
               </label>
             )}
+            {activeTool === "eraser" && (
+              <label className="label-mono flex items-center gap-3 text-graphite/70">
+                <span>{dict.studio.eraserSizeLabel}</span>
+                <input
+                  type="range"
+                  min={4}
+                  max={60}
+                  value={eraserSize}
+                  onChange={(event) => setEraserSize(Number(event.target.value))}
+                  className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+                />
+                <span className="w-6 tabular-nums text-graphite">{eraserSize}</span>
+              </label>
+            )}
             <label className="label-mono flex items-center gap-3 text-graphite/70">
               <span>{dict.studio.zoomLabel}</span>
               <input
@@ -667,18 +734,22 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 onPointerDown={(event) => {
                   handleLassoPointerDown(event);
                   handleBrushPointerDown(event);
+                  handleEraserPointerDown(event);
                 }}
                 onPointerMove={(event) => {
                   handleLassoPointerMove(event);
                   handleBrushPointerMove(event);
+                  handleEraserPointerMove(event);
                 }}
                 onPointerUp={(event) => {
                   handleLassoPointerUp(event);
                   handleBrushPointerUp(event);
+                  handleEraserPointerUp();
                 }}
                 onPointerCancel={(event) => {
                   handleLassoPointerUp(event);
                   handleBrushPointerUp(event);
+                  handleEraserPointerUp();
                 }}
                 style={{ width: `${zoom}%`, height: "auto" }}
                 className={

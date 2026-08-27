@@ -80,6 +80,8 @@ export interface Dictionary {
     toolBrushLabel: string;
     toolHandLabel: string;
     brushSizeLabel: string;
+    toolEraserLabel: string;
+    eraserSizeLabel: string;
   };
   colors: {
     eyebrow: string;

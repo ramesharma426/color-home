@@ -90,6 +90,8 @@ export const ne: Dictionary = {
     toolBrushLabel: "चयन ब्रस",
     toolHandLabel: "हात (सार्नुहोस्)",
     brushSizeLabel: "ब्रस साइज",
+    toolEraserLabel: "इरेजर",
+    eraserSizeLabel: "इरेजर साइज",
   },
   colors: {
     eyebrow: "रङ पुस्तकालय",

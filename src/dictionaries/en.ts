@@ -91,6 +91,8 @@ export const en: Dictionary = {
     toolBrushLabel: "Selection Brush",
     toolHandLabel: "Hand (pan)",
     brushSizeLabel: "Brush size",
+    toolEraserLabel: "Eraser",
+    eraserSizeLabel: "Eraser size",
   },
   colors: {
     eyebrow: "Color Library",

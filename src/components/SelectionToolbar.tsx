@@ -3,7 +3,7 @@
 import { getDictionary } from "@/lib/dictionary";
 import type { Locale } from "@/dictionaries/types";
 
-export type SelectionTool = "magicWand" | "lasso" | "polygonLasso" | "brush" | "hand";
+export type SelectionTool = "magicWand" | "lasso" | "polygonLasso" | "brush" | "eraser" | "hand";
 
 export function SelectionToolbar({
   activeTool,
@@ -20,6 +20,7 @@ export function SelectionToolbar({
     { id: "lasso", label: dict.studio.toolLassoLabel, glyph: "◌" },
     { id: "polygonLasso", label: dict.studio.toolPolygonLassoLabel, glyph: "⬠" },
     { id: "brush", label: dict.studio.toolBrushLabel, glyph: "●" },
+    { id: "eraser", label: dict.studio.toolEraserLabel, glyph: "⌫" },
     { id: "hand", label: dict.studio.toolHandLabel, glyph: "✋" },
   ];
 
