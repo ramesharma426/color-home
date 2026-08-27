@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Region } from "./ColorStudio";
 import { rgbToHex } from "@/lib/canvas/colorMath";
 import { SwatchRamp } from "./SwatchRamp";
@@ -25,6 +25,7 @@ export function RegionList({
   const dict = getDictionary(locale);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState("");
+  const suppressBlurRef = useRef(false);
 
   if (regions.length === 0) {
     return (
@@ -83,10 +84,22 @@ export function RegionList({
                       onChange={(event) => setDraftLabel(event.target.value)}
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter") commitRename(region.id);
-                        if (event.key === "Escape") setEditingId(null);
+                        if (event.key === "Enter") {
+                          suppressBlurRef.current = true;
+                          commitRename(region.id);
+                        }
+                        if (event.key === "Escape") {
+                          suppressBlurRef.current = true;
+                          setEditingId(null);
+                        }
                       }}
-                      onBlur={() => commitRename(region.id)}
+                      onBlur={() => {
+                        if (suppressBlurRef.current) {
+                          suppressBlurRef.current = false;
+                          return;
+                        }
+                        commitRename(region.id);
+                      }}
                       className="w-full border border-skylight bg-white px-1 py-0.5 font-display text-sm font-bold tracking-tightest"
                     />
                   ) : (
