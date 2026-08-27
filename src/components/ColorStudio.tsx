@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCanvasWorker } from "@/lib/canvas/useCanvasWorker";
 import { imageBitmapToBuffer } from "@/lib/canvas/imageBitmapToBuffer";
 import { computeBorderMask } from "@/lib/canvas/borderMask";
@@ -44,6 +44,14 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const isSpacePanningRef = useRef(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+  // Tracks whether an actual pan occurred during the CURRENT pointer sequence
+  // (set on every qualifying pointermove, not just once). Checking
+  // isSpacePanningRef alone at click time is unreliable — the user can
+  // release Spacebar before releasing the mouse button, so the ref may
+  // already be false by the time the browser's synthetic `click` fires after
+  // a Spacebar-pan drag. This ref is the thing handleCanvasClick actually
+  // trusts to distinguish "this click ends a pan" from "this is a real click".
+  const panDidOccurRef = useRef(false);
   const [isPanning, setIsPanning] = useState(false);
   const lassoPathRef = useRef<Point[]>([]);
   const [isDrawingLasso, setIsDrawingLasso] = useState(false);
@@ -83,17 +91,32 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     }
     function handleKeyDown(event: KeyboardEvent) {
       if (event.code === "Space" && !isTypingTarget(event.target)) {
+        // Prevent Space's native default action: on <body> it scrolls the
+        // page, and on a focused button (a toolbar button, a palette
+        // swatch, DownloadButton) it activates that button — so holding
+        // Space to pan could otherwise trigger a download or re-apply a
+        // color as a side effect.
+        event.preventDefault();
         isSpacePanningRef.current = true;
       }
     }
     function handleKeyUp(event: KeyboardEvent) {
       if (event.code === "Space") isSpacePanningRef.current = false;
     }
+    function handleBlur() {
+      // If the user alt-tabs or a native dialog opens while Space is held,
+      // keyup never fires and the flag would otherwise stay true forever,
+      // silently breaking Lasso/Polygonal Lasso/Brush until Space happens
+      // to be pressed and released again.
+      isSpacePanningRef.current = false;
+    }
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
     };
   }, []);
 
@@ -150,6 +173,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   }
 
   function handleWrapperPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    // Reset at the start of every fresh pointer-down so a stale `true` from a
+    // previous pan can never leak into an unrelated later click that wasn't
+    // preceded by a pan on this new pointer sequence.
+    panDidOccurRef.current = false;
     if (event.button !== 0) return; // left button only — don't interfere with right-click
     if (activeTool !== "hand" && !isSpacePanningRef.current) return;
     const wrapper = wrapperRef.current;
@@ -167,6 +194,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const pan = panStateRef.current;
     const wrapper = wrapperRef.current;
     if (!pan || !wrapper) return;
+    panDidOccurRef.current = true;
     wrapper.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
     wrapper.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
   }
@@ -194,10 +222,23 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (!point) return;
     lassoPathRef.current = [point];
     setIsDrawingLasso(true);
+    // Route all subsequent pointer events for this gesture to the canvas
+    // regardless of where the cursor physically ends up — without this, a
+    // drag that leaves the canvas (routine at zoom <= 100%, where the
+    // wrapper is wider than the photo) releases over some other element and
+    // the canvas never sees the pointerup, silently discarding the stroke.
+    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function handleLassoPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (activeTool !== "lasso" || lassoPathRef.current.length === 0 || isSpacePanningRef.current) return;
+    // isDrawingLasso is the authoritative "currently drawing" flag; the
+    // ref-based length check is kept only as a same-tick fallback for the
+    // instant right after pointerdown, before the state update has
+    // committed. Once handleLassoPointerUp has run, both are false/empty, so
+    // a stray pointer move over the canvas can never resume appending to an
+    // abandoned path.
+    const isDrawing = isDrawingLasso || lassoPathRef.current.length > 0;
+    if (activeTool !== "lasso" || !isDrawing || isSpacePanningRef.current) return;
     const point = canvasPointFromEvent(event);
     if (!point) return;
     lassoPathRef.current.push(point);
@@ -221,6 +262,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const point = canvasPointFromEvent(event);
     if (!point) return;
     brushPathRef.current = [point];
+    // See handleLassoPointerDown — same reasoning: keep the gesture routed
+    // to the canvas even if the drag leaves its bounds.
+    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function handleBrushPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -238,13 +282,18 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const baseBuffer = baseBufferRef.current;
     if (!baseBuffer || path.length === 0) return;
 
-    const isMerge = (event.ctrlKey || event.metaKey) && Boolean(activeRegionId);
-    const baseMask = isMerge
+    const ctrlOrMeta = event.ctrlKey || event.metaKey;
+    // This Boolean(activeRegionId) check is kept here — it picks the
+    // *starting mask* for paintBrushStroke (paint onto the existing active
+    // region vs. a blank canvas), a different decision from whether
+    // commitToolMask should merge. commitToolMask makes that call itself now.
+    const isMergeForBaseMask = ctrlOrMeta && Boolean(activeRegionId);
+    const baseMask = isMergeForBaseMask
       ? regions.find((r) => r.id === activeRegionId)?.mask ?? new Uint8Array(baseBuffer.width * baseBuffer.height)
       : new Uint8Array(baseBuffer.width * baseBuffer.height);
 
     const newMask = paintBrushStroke(baseMask, baseBuffer.width, baseBuffer.height, path, brushSize);
-    await commitToolMask(newMask, isMerge);
+    await commitToolMask(newMask, ctrlOrMeta);
   }
 
   const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
@@ -283,10 +332,20 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (!baseBuffer || points.length < 3) return; // too few vertices — silently discard
 
     const newMask = polygonToMask(points, baseBuffer.width, baseBuffer.height);
-    await commitToolMask(newMask, shouldMerge && Boolean(activeRegionId));
+    await commitToolMask(newMask, shouldMerge);
   }
 
   async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    // A pan (whether via the Hand tool or a Spacebar override) that ends
+    // over the canvas still fires a native `click` on release — there's no
+    // pointercancel to distinguish it. If a pan actually occurred during
+    // this pointer sequence, consume the flag and bail before doing
+    // anything else, so Magic Wand (the default active tool) doesn't flood
+    // fill and create a spurious, undeletable region on every pan.
+    if (panDidOccurRef.current) {
+      panDidOccurRef.current = false;
+      return;
+    }
     if (activeTool !== "magicWand") return;
     const canvas = canvasRef.current;
     const baseBuffer = baseBufferRef.current;
@@ -299,14 +358,22 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const y = Math.round((event.clientY - rect.top) * scaleY);
 
     const newMask = await runFloodFill(baseBuffer, x, y, tolerance);
-    await commitToolMask(newMask, (event.ctrlKey || event.metaKey) && Boolean(activeRegionId));
+    await commitToolMask(newMask, event.ctrlKey || event.metaKey);
   }
 
+  // shouldMerge is trusted at face value here — this is the one place that
+  // decides whether a raw ctrl/meta modifier actually means "merge into the
+  // active region", including checking that a region is even active. Every
+  // call site just passes the raw modifier check; none of them should
+  // reintroduce their own Boolean(activeRegionId) wrapper (a prior drift
+  // where the Lasso call site omitted it caused Ctrl+drag with no active
+  // region to silently no-op instead of falling through to create a new
+  // region like every other tool).
   async function commitToolMask(newMask: Uint8Array, shouldMerge: boolean) {
     const baseBuffer = baseBufferRef.current;
     if (!baseBuffer) return;
 
-    if (shouldMerge) {
+    if (shouldMerge && activeRegionId) {
       const activeRegion = regions.find((r) => r.id === activeRegionId);
       if (!activeRegion) return;
 
@@ -439,6 +506,21 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   // its own last-drawn line, leaving a stray line stuck on screen after
   // Escape or a successful close. One authority, one clear-then-redraw-both
   // per frame, fixes both.
+  // The marching-squares contour is the expensive part of the overlay (a
+  // full Array.from + d3-contour pass over a mask that can be ~1.9M elements
+  // for a 1600px-long-edge photo). It depends only on which region is
+  // active and that region's mask shape — NOT on polygonPreview, which
+  // changes on every vertex click while placing a Polygonal Lasso. Keeping
+  // this in its own memo (rather than inline in the draw effect below) means
+  // clicking polygon vertices no longer re-runs this computation at all.
+  const activeRegionContour = useMemo(() => {
+    const baseBuffer = baseBufferRef.current;
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    if (!baseBuffer || !activeRegion) return null;
+    return contours().size([baseBuffer.width, baseBuffer.height]).smooth(false).contour(Array.from(activeRegion.mask), 0.5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regions, activeRegionId]);
+
   useEffect(() => {
     const overlay = overlayCanvasRef.current;
     const baseBuffer = baseBufferRef.current;
@@ -457,9 +539,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
       return;
     }
 
-    const multiPolygon = activeRegion
-      ? contours().size([baseBuffer.width, baseBuffer.height]).smooth(false).contour(Array.from(activeRegion.mask), 0.5)
-      : null;
+    const multiPolygon = activeRegionContour;
 
     let animationFrameId: number;
     let lastFrameTime = 0;
@@ -584,6 +664,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                   handleBrushPointerMove(event);
                 }}
                 onPointerUp={(event) => {
+                  handleLassoPointerUp(event);
+                  handleBrushPointerUp(event);
+                }}
+                onPointerCancel={(event) => {
                   handleLassoPointerUp(event);
                   handleBrushPointerUp(event);
                 }}
