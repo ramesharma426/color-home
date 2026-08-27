@@ -4731,6 +4731,118 @@ git commit -m "feat: show a cursor-following size circle for the Brush and Erase
 
 ---
 
+## Plan expansion (2026-08-27): cursor polish + Alt+scroll zoom, per owner requests
+
+**Added per explicit owner feedback:** "remove the + sign in eraser it should have circle only" (the native browser crosshair cursor is still showing underneath Task 41's drawn size circle for Brush/Eraser — should be hidden so only the circle is visible), "if we press spacebar inside the image hand tool should appear" (holding Spacebar already enables panning per the pan-revision work, but the cursor doesn't visually change to a hand/grab icon unless the Hand tool is actually selected in the toolbar — it should, regardless of which tool is actually active), and "alt + mouse scroll should zoom in and out image" (a new interaction, not previously requested — zoom is currently slider-only).
+
+### Task 42: Hide native cursor for Brush/Eraser, show hand cursor during Spacebar-pan, Alt+scroll to zoom
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally.
+
+- [ ] **Step 1: Track Spacebar-panning as React state, not just a ref**
+
+The existing `isSpacePanningRef` (a ref) is read synchronously inside pointer-event handlers and must stay a ref for that — refs don't trigger re-renders, which is exactly why it's used there. But the cursor's CSS class needs to react to Spacebar being held, which requires actual React state. Add a parallel state variable and set both together everywhere the ref is currently set.
+
+Near `isSpacePanningRef`, add:
+
+```tsx
+const [isSpacePanning, setIsSpacePanning] = useState(false);
+```
+
+In the existing Spacebar-tracking `useEffect`, update all three handlers to set both the ref and the new state together:
+
+```tsx
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.code === "Space" && !isTypingTarget(event.target)) {
+        // Prevent Space's native default action: on <body> it scrolls the
+        // page, and on a focused button (a toolbar button, a palette
+        // swatch, DownloadButton) it activates that button — so holding
+        // Space to pan could otherwise trigger a download or re-apply a
+        // color as a side effect.
+        event.preventDefault();
+        isSpacePanningRef.current = true;
+        setIsSpacePanning(true);
+      }
+    }
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.code === "Space") {
+        isSpacePanningRef.current = false;
+        setIsSpacePanning(false);
+      }
+    }
+    function handleBlur() {
+      // If the user alt-tabs or a native dialog opens while Space is held,
+      // keyup never fires and the flag would otherwise stay true forever,
+      // silently breaking Lasso/Polygonal Lasso/Brush until Space happens
+      // to be pressed and released again.
+      isSpacePanningRef.current = false;
+      setIsSpacePanning(false);
+    }
+```
+
+(Only the three lines assigning to `isSpacePanningRef.current` are new-adjacent — each now has a matching `setIsSpacePanning(...)` call right after it. Nothing else in this effect changes.)
+
+- [ ] **Step 2: Rewrite the canvas cursor className with the correct priority order**
+
+Find the canvas's `className` (currently a 3-way ternary: `isPanning` → grabbing, `activeTool === "hand"` → grab, else → crosshair). Replace it with a small helper function computed above the JSX return (near the other render-time helpers), so the priority order is easy to read and reuse:
+
+```tsx
+function canvasCursorClassName(): string {
+  if (isPanning) return "block cursor-grabbing";
+  if (isSpacePanning) return "block cursor-grab"; // Spacebar overrides every tool's own cursor
+  if (activeTool === "hand") return "block cursor-grab";
+  if (activeTool === "brush" || activeTool === "eraser") return "block cursor-none"; // Task 41's drawn circle is the only indicator now
+  return "block cursor-crosshair";
+}
+```
+
+Then change the canvas's `className` prop from the inline ternary to:
+
+```tsx
+className={canvasCursorClassName()}
+```
+
+- [ ] **Step 3: Add Alt+scroll-wheel zoom**
+
+Add a new handler near `handleWrapperPointerDown`:
+
+```tsx
+function handleWrapperWheel(event: React.WheelEvent<HTMLDivElement>) {
+  if (!event.altKey) return; // plain scroll still scrolls the wrapper normally
+  event.preventDefault();
+  const direction = event.deltaY < 0 ? 1 : -1; // scroll up = zoom in, scroll down = zoom out
+  setZoom((prev) => Math.min(200, Math.max(50, prev + direction * 10)));
+}
+```
+
+Add `onWheel={handleWrapperWheel}` to the existing wrapper `<div>` (the one with `ref={wrapperRef}`), alongside its existing `onPointerDown`/`onPointerMove`/`onPointerUp`/`onPointerLeave` props.
+
+- [ ] **Step 4: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Brush or Eraser, hover over the photo — confirm the native cursor (crosshair, arrow, or "+") is gone entirely and only Task 41's drawn circle is visible.
+- With Magic Wand, Lasso, or Polygonal Lasso active, confirm the crosshair cursor still shows as before (this task only changes Brush/Eraser).
+- With any tool other than Hand active, hold Spacebar — confirm the cursor immediately switches to an open-hand (grab) icon, and dragging switches it to a closed-hand (grabbing) icon, exactly like the actual Hand tool. Release Spacebar — confirm the cursor reverts to that tool's own cursor (crosshair, or none for Brush/Eraser).
+- Hold Alt and scroll up over the photo — confirm it zooms in (and the zoom slider's displayed value updates to match). Scroll down — confirm it zooms out. Confirm zoom is clamped at 50% and 200%, matching the slider's own bounds.
+- Confirm a plain scroll (no Alt held) still scrolls the photo within its wrapper normally, unaffected by this change.
+
+- [ ] **Step 5: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 46/46 (unchanged; this task is purely cursor/zoom UI polish, no new unit-testable pure logic).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: hide native cursor for Brush/Eraser, show hand cursor during Spacebar-pan, add Alt+scroll zoom"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
