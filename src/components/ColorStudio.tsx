@@ -387,13 +387,24 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   useEffect(render, [regions]);
 
   // Draw an animated dashed "marching ants" outline around the currently
-  // active region on a separate overlay canvas stacked over the main one,
-  // so the selection is visible on screen without ever being baked into the
-  // composited image that DownloadButton reads from canvasRef. d3-contour
-  // (not a hand-rolled tracer) is used because it correctly outlines every
-  // disconnected patch of a region — a Ctrl+click merge (Task 28) can leave
-  // one region spanning several unconnected patches, and a single-component
-  // tracer would silently miss all but the first.
+  // active region, AND (when a Polygonal Lasso is in progress) the solid
+  // rubber-band preview line, on a separate overlay canvas stacked over the
+  // main one — so the selection is visible on screen without ever being
+  // baked into the composited image that DownloadButton reads from
+  // canvasRef. d3-contour (not a hand-rolled tracer) is used for the ants
+  // because it correctly outlines every disconnected patch of a region — a
+  // Ctrl+click merge (Task 28) can leave one region spanning several
+  // unconnected patches, and a single-component tracer would silently miss
+  // all but the first.
+  //
+  // Both layers are drawn from this single effect/render-loop rather than
+  // two independent ones: they share the same overlay canvas, and two
+  // uncoordinated clearRect/draw cycles fight each other — the ants loop's
+  // ~20fps clear was wiping out the preview line within one frame, and a
+  // preview-only effect that returns early on an empty preview never clears
+  // its own last-drawn line, leaving a stray line stuck on screen after
+  // Escape or a successful close. One authority, one clear-then-redraw-both
+  // per frame, fixes both.
   useEffect(() => {
     const overlay = overlayCanvasRef.current;
     const baseBuffer = baseBufferRef.current;
@@ -405,13 +416,16 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (!ctx) return;
 
     const activeRegion = regions.find((r) => r.id === activeRegionId);
-    if (!activeRegion) {
+    const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+
+    if (!activeRegion && !showPreview) {
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       return;
     }
 
-    const generator = contours().size([baseBuffer.width, baseBuffer.height]).smooth(false);
-    const multiPolygon = generator.contour(Array.from(activeRegion.mask), 0.5);
+    const multiPolygon = activeRegion
+      ? contours().size([baseBuffer.width, baseBuffer.height]).smooth(false).contour(Array.from(activeRegion.mask), 0.5)
+      : null;
 
     let animationFrameId: number;
     let lastFrameTime = 0;
@@ -424,17 +438,32 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
         dashOffset = (dashOffset + 1) % 8;
 
         ctx!.clearRect(0, 0, overlay!.width, overlay!.height);
-        ctx!.setLineDash([4, 4]);
-        ctx!.lineDashOffset = -dashOffset;
-        ctx!.strokeStyle = "#ff00ff"; // bright magenta — distinct from any paint
-        ctx!.lineWidth = 1; // color a user could realistically pick
-        for (const polygon of multiPolygon.coordinates) {
-          for (const ring of polygon) {
-            ctx!.beginPath();
-            ctx!.moveTo(ring[0][0], ring[0][1]);
-            for (let i = 1; i < ring.length; i++) ctx!.lineTo(ring[i][0], ring[i][1]);
-            ctx!.stroke();
+
+        if (multiPolygon) {
+          ctx!.setLineDash([4, 4]);
+          ctx!.lineDashOffset = -dashOffset;
+          ctx!.strokeStyle = "#ff00ff"; // bright magenta — distinct from any paint
+          ctx!.lineWidth = 1; // color a user could realistically pick
+          for (const polygon of multiPolygon.coordinates) {
+            for (const ring of polygon) {
+              ctx!.beginPath();
+              ctx!.moveTo(ring[0][0], ring[0][1]);
+              for (let i = 1; i < ring.length; i++) ctx!.lineTo(ring[i][0], ring[i][1]);
+              ctx!.stroke();
+            }
           }
+        }
+
+        if (showPreview) {
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#ff00ff";
+          ctx!.lineWidth = 1;
+          ctx!.beginPath();
+          ctx!.moveTo(polygonPreview[0].x, polygonPreview[0].y);
+          for (let i = 1; i < polygonPreview.length; i++) {
+            ctx!.lineTo(polygonPreview[i].x, polygonPreview[i].y);
+          }
+          ctx!.stroke();
         }
       }
       animationFrameId = requestAnimationFrame(drawFrame);
@@ -442,29 +471,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
     animationFrameId = requestAnimationFrame(drawFrame);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [regions, activeRegionId]);
-
-  // Live rubber-band preview of the in-progress Polygonal Lasso path, drawn on
-  // the same overlay canvas as the marching ants above. Kept as a separate
-  // effect (different deps) so it doesn't fight that animation loop's own
-  // clearRect/draw cycle on every render.
-  useEffect(() => {
-    if (activeTool !== "polygonLasso" || polygonPreview.length === 0) return;
-    const overlay = overlayCanvasRef.current;
-    if (!overlay) return;
-    const ctx = overlay.getContext("2d");
-    if (!ctx) return;
-
-    ctx.setLineDash([]);
-    ctx.strokeStyle = "#ff00ff";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(polygonPreview[0].x, polygonPreview[0].y);
-    for (let i = 1; i < polygonPreview.length; i++) {
-      ctx.lineTo(polygonPreview[i].x, polygonPreview[i].y);
-    }
-    ctx.stroke();
-  }, [polygonPreview, activeTool]);
+  }, [regions, activeRegionId, polygonPreview, activeTool]);
 
   return (
     <div className="space-y-8">
