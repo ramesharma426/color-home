@@ -85,19 +85,9 @@ export const en: Dictionary = {
     downloadButtonLabel: "Download result",
   },
   colors: {
-    pageTitle: "Berger Yellows & Oranges",
-    eyebrowBrand: "Berger",
-    shadesSuffix: "shades",
+    eyebrow: "Color Library",
+    pageTitle: "Browse Colors",
     subtitle:
-      "Every shade is shown the way a wall actually wears it: deep shade on the left, full sun on the right, and the paint exactly as the card lists it in the middle.",
-    ctaTryOnWall: "Try one on your wall",
-    caveat:
-      "Colors shown are visually estimated from a printed swatch card — confirm against the physical Berger ColorBank fandeck before ordering paint.",
-    categoryFacade: "Facade",
-    categoryTrim: "Trims",
-    categoryRoof: "Roofs",
-    categoryNoteFacade: "Large exterior surfaces — the wall you see from the road.",
-    categoryNoteTrim: "Window frames, railings, door surrounds, bands and edges.",
-    categoryNoteRoof: "Tile, sheet, and parapet colors that sit against the sky.",
+      "Explore the full Berger and Asian Paints catalogues — search by name or code, or browse by shade family.",
   },
 };

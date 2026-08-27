@@ -74,17 +74,8 @@ export interface Dictionary {
     downloadButtonLabel: string;
   };
   colors: {
+    eyebrow: string;
     pageTitle: string;
-    eyebrowBrand: string;
-    shadesSuffix: string;
     subtitle: string;
-    ctaTryOnWall: string;
-    caveat: string;
-    categoryFacade: string;
-    categoryTrim: string;
-    categoryRoof: string;
-    categoryNoteFacade: string;
-    categoryNoteTrim: string;
-    categoryNoteRoof: string;
   };
 }
