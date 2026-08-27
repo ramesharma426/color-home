@@ -2727,6 +2727,69 @@ git commit -m "feat: redesign Colors page with brand selection and search"
 
 ---
 
+### Task 30: Move "Browse the full catalog" out of the sidebar, full-width below the photo
+
+**Added per explicit owner feedback (2026-08-27):** "we have plenty of space below the image edit box, move the browse the full catalog below the image because the name of the color is cropped." Root cause: `PaletteBrowser.tsx`'s "Browse the full catalog" section (Task 29) renders `CatalogueBrowser`, whose swatch grid uses `lg:grid-cols-6` — a viewport-width breakpoint, not a container-width one. It's nested inside `ColorStudio.tsx`'s fixed `21rem` sidebar column, so at the `lg` breakpoint it tries to fit 6 columns into ~336px, making each swatch too narrow to show its color name without truncation.
+
+**Files:**
+- Modify: `src/components/PaletteBrowser.tsx` (remove the "Browse the full catalog" section — revert to Task 23's pre-Task-29 scope: curated swatches + free picker + caveat only)
+- Modify: `src/components/ColorStudio.tsx` (add a new full-width section below the main two-column grid, rendering `CatalogueBrowser` there instead)
+
+**Interfaces:** unchanged — `CatalogueBrowser`'s `onSelect`/`disabled` props are reused exactly as Task 29 already wired them, just relocated to a wider container.
+
+- [ ] **Step 1: Remove the catalog section from `PaletteBrowser.tsx`**
+
+Delete the `import { CatalogueBrowser } from "./CatalogueBrowser";` line and the trailing block:
+
+```tsx
+<div className="mt-6 border-t border-hairline-strong/60 pt-4">
+  <p className="mb-3 text-sm font-semibold text-graphite/70">Browse the full catalog</p>
+  <CatalogueBrowser onSelect={onSelect} disabled={disabled} />
+</div>
+```
+
+`PaletteBrowser.tsx` goes back to ending at the `paletteCaveat` paragraph, exactly as it was after Task 23.
+
+- [ ] **Step 2: Add the catalog section to `ColorStudio.tsx`, full-width, below the main grid**
+
+Import `CatalogueBrowser`. The component currently `return`s the two-column grid `<div>` directly as its root — wrap it in a fragment (or an outer `<div className="space-y-8">`) and add the new section as a sibling AFTER the grid, not inside the `<aside>`:
+
+```tsx
+return (
+  <div className="space-y-8">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
+      {/* ...existing photo column and <aside> unchanged... */}
+    </div>
+    <section>
+      <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
+        Browse the full catalog
+      </h2>
+      <CatalogueBrowser onSelect={handleColorSelect} disabled={!activeRegionId} />
+    </section>
+  </div>
+);
+```
+
+Keep every existing prop/handler on the photo column and `<aside>` exactly as they are — this task only adds the new sibling section and moves where `CatalogueBrowser` is rendered, nothing else.
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up), upload a photo, scroll below the photo/sidebar area, confirm the full catalog browser now renders full-width with legible, uncropped color names in its grid. Confirm the sidebar's curated Berger swatches and free picker still work exactly as before (unaffected by the move). Confirm clicking a full-catalog swatch still recolors the active region correctly.
+
+- [ ] **Step 4: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — must stay at 37/37, unchanged (this is a JSX-relocation only, no logic change).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/components/PaletteBrowser.tsx src/components/ColorStudio.tsx
+git commit -m "fix: move full catalog browser out of the cramped sidebar, full-width below the photo"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
