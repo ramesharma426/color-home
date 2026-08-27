@@ -2727,7 +2727,11 @@ git commit -m "feat: redesign Colors page with brand selection and search"
 
 ---
 
-### Task 24: End-to-end test with Playwright
+### Task 24: End-to-end test with Playwright — SKIPPED
+
+**Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
+
+The original task spec follows, unimplemented:
 
 **Files:**
 - Create: `playwright.config.ts`
