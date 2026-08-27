@@ -2859,6 +2859,128 @@ git commit -m "fix: move full catalog below photo, remove free color pickers"
 
 ---
 
+### Task 31: Click-and-drag panning ("hand tool") when zoomed in
+
+**Added per explicit owner feedback (2026-08-27):** "there is zoom feature but not a hand tool to drag image inside the box" — zooming in (Task 26) only gives native browser scrollbars on the photo's wrapper; there's no click-and-drag panning like Photoshop's hand tool.
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally.
+
+**Design constraint — this must coexist with every existing canvas interaction without breaking any of them:** plain click (new region), Ctrl/Cmd+click (merge), right-click (new region), and native HTML5 drag-and-drop of a color swatch onto the canvas (Task 19). The approach: track pointer movement on the WRAPPER div (not the canvas), and only treat it as a pan once movement exceeds a small threshold — below that threshold, let the click fire normally. A pan that did cross the threshold must suppress the click that would otherwise fire on pointer-up.
+
+- [ ] **Step 1: Add pan tracking state and refs**
+
+Near the existing `zoom`/`borderPickerOpen` state:
+
+```tsx
+const wrapperRef = useRef<HTMLDivElement>(null);
+const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; dragged: boolean } | null>(null);
+const suppressNextClickRef = useRef(false);
+const [isPanning, setIsPanning] = useState(false);
+```
+
+- [ ] **Step 2: Add pointer handlers**
+
+```tsx
+function handleWrapperPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+  if (event.button !== 0) return; // left button only — don't interfere with right-click
+  const wrapper = wrapperRef.current;
+  if (!wrapper) return;
+  panStateRef.current = {
+    startX: event.clientX,
+    startY: event.clientY,
+    scrollLeft: wrapper.scrollLeft,
+    scrollTop: wrapper.scrollTop,
+    dragged: false,
+  };
+}
+
+function handleWrapperPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+  const pan = panStateRef.current;
+  const wrapper = wrapperRef.current;
+  if (!pan || !wrapper) return;
+
+  const dx = event.clientX - pan.startX;
+  const dy = event.clientY - pan.startY;
+
+  if (!pan.dragged && Math.hypot(dx, dy) > 4) {
+    pan.dragged = true;
+    setIsPanning(true);
+  }
+
+  if (pan.dragged) {
+    wrapper.scrollLeft = pan.scrollLeft - dx;
+    wrapper.scrollTop = pan.scrollTop - dy;
+  }
+}
+
+function handleWrapperPointerUp() {
+  if (panStateRef.current?.dragged) {
+    // A real pan happened — swallow the click that's about to fire on the
+    // canvas underneath, so panning never accidentally creates a new region.
+    suppressNextClickRef.current = true;
+  }
+  panStateRef.current = null;
+  setIsPanning(false);
+}
+```
+
+- [ ] **Step 3: Make `handleCanvasClick` bail out immediately after a pan**
+
+At the very top of the existing `handleCanvasClick` function (before any of its current logic):
+
+```tsx
+async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  if (suppressNextClickRef.current) {
+    suppressNextClickRef.current = false;
+    return;
+  }
+  // ...rest of the existing function body, completely unchanged...
+```
+
+Do not change anything else in this function — this is a single early-return guard clause added at the top, nothing else moves or changes.
+
+- [ ] **Step 4: Wire the handlers onto the wrapper, and swap the canvas cursor while panning**
+
+Find the existing wrapper `<div>` around the two canvases (currently `className="relative overflow-auto border border-hairline"`) and add the ref + pointer handlers:
+
+```tsx
+<div
+  ref={wrapperRef}
+  className="relative overflow-auto border border-hairline"
+  onPointerDown={handleWrapperPointerDown}
+  onPointerMove={handleWrapperPointerMove}
+  onPointerUp={handleWrapperPointerUp}
+  onPointerLeave={handleWrapperPointerUp}
+>
+```
+
+On the main canvas, swap its cursor class to reflect panning state (idle stays a crosshair, since click-to-select is the primary action; only actively dragging shows a grabbing hand):
+
+```tsx
+className={isPanning ? "block cursor-grabbing" : "block cursor-crosshair"}
+```
+
+- [ ] **Step 5: Manual verification and reasoning**
+
+With the dev server running (do NOT run `npm run build` while it's up), upload a photo, zoom to 150-200% so the photo overflows its wrapper, then click-and-drag inside the photo area and confirm it pans (scrolls) instead of creating a new region. Release and confirm a plain click (no drag) still creates a region normally. Confirm Ctrl+click-drag still doesn't accidentally create/merge a region if it was actually a pan (the `suppressNextClickRef` guard applies regardless of modifier keys, since it triggers before any of `handleCanvasClick`'s own logic runs). Confirm right-click still works (unaffected, since panning is gated to the left mouse button only). Confirm dragging a color swatch from the sidebar onto the canvas still works (native HTML5 drag-and-drop starts on the swatch button elsewhere, never triggers the wrapper's `onPointerDown`, so the two mechanisms don't compete for the same gesture).
+
+- [ ] **Step 6: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — must stay at 37/37 (this task is interaction-only, no logic under test changes).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: add click-and-drag panning when zoomed in"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
