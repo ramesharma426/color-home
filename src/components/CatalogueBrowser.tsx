@@ -25,8 +25,10 @@ const BRANDS: { id: PaintBrand; label: string; colors: CatalogueColor[]; categor
  */
 export function CatalogueBrowser({
   onSelect,
+  disabled = false,
 }: {
   onSelect?: (color: RGBColor) => void;
+  disabled?: boolean;
 } = {}) {
   const [brandId, setBrandId] = useState<PaintBrand>("berger");
   const [category, setCategory] = useState<string | null>(null);
@@ -54,7 +56,7 @@ export function CatalogueBrowser({
   }
 
   return (
-    <div>
+    <div className={disabled ? "opacity-50" : undefined}>
       <div role="tablist" aria-label="Paint brand" className="mb-6 flex gap-2">
         {BRANDS.map((b) => (
           <button
@@ -129,7 +131,9 @@ export function CatalogueBrowser({
                 key={`${color.name}-${color.code}`}
                 type="button"
                 title={`${color.name} — ${color.code}`}
-                onClick={() => onSelect(hexToRgb(color.hex))}
+                onClick={() => {
+                  if (!disabled) onSelect(hexToRgb(color.hex));
+                }}
                 className={className}
               >
                 {swatch}
