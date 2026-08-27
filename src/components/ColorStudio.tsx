@@ -42,6 +42,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const { runFloodFill, runRecolor } = useCanvasWorker();
   const [activeTool, setActiveTool] = useState<SelectionTool>("magicWand");
   const isSpacePanningRef = useRef(false);
+  const [isSpacePanning, setIsSpacePanning] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   // Tracks whether an actual pan occurred during the CURRENT pointer sequence
@@ -101,10 +102,14 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
         // color as a side effect.
         event.preventDefault();
         isSpacePanningRef.current = true;
+        setIsSpacePanning(true);
       }
     }
     function handleKeyUp(event: KeyboardEvent) {
-      if (event.code === "Space") isSpacePanningRef.current = false;
+      if (event.code === "Space") {
+        isSpacePanningRef.current = false;
+        setIsSpacePanning(false);
+      }
     }
     function handleBlur() {
       // If the user alt-tabs or a native dialog opens while Space is held,
@@ -112,6 +117,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
       // silently breaking Lasso/Polygonal Lasso/Brush until Space happens
       // to be pressed and released again.
       isSpacePanningRef.current = false;
+      setIsSpacePanning(false);
     }
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
@@ -205,6 +211,13 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   function handleWrapperPointerUp() {
     panStateRef.current = null;
     setIsPanning(false);
+  }
+
+  function handleWrapperWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.altKey) return; // plain scroll still scrolls the wrapper normally
+    event.preventDefault();
+    const direction = event.deltaY < 0 ? 1 : -1; // scroll up = zoom in, scroll down = zoom out
+    setZoom((prev) => Math.min(200, Math.max(50, prev + direction * 10)));
   }
 
   function canvasPointFromEvent(event: { clientX: number; clientY: number }): Point | null {
@@ -665,6 +678,14 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     return () => cancelAnimationFrame(animationFrameId);
   }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize]);
 
+  function canvasCursorClassName(): string {
+    if (isPanning) return "block cursor-grabbing";
+    if (isSpacePanning) return "block cursor-grab"; // Spacebar overrides every tool's own cursor
+    if (activeTool === "hand") return "block cursor-grab";
+    if (activeTool === "brush" || activeTool === "eraser") return "block cursor-none"; // Task 41's drawn circle is the only indicator now
+    return "block cursor-crosshair";
+  }
+
   return (
     <div className="space-y-8">
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
@@ -736,6 +757,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
               onPointerMove={handleWrapperPointerMove}
               onPointerUp={handleWrapperPointerUp}
               onPointerLeave={handleWrapperPointerUp}
+              onWheel={handleWrapperWheel}
             >
               <canvas
                 ref={canvasRef}
@@ -770,13 +792,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 }}
                 onPointerLeave={() => setCursorPos(null)}
                 style={{ width: `${zoom}%`, height: "auto" }}
-                className={
-                  isPanning
-                    ? "block cursor-grabbing"
-                    : activeTool === "hand"
-                    ? "block cursor-grab"
-                    : "block cursor-crosshair"
-                }
+                className={canvasCursorClassName()}
               />
               <canvas
                 ref={overlayCanvasRef}
