@@ -32,6 +32,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [regions, setRegions] = useState<Region[]>([]);
   const [activeRegionId, setActiveRegionId] = useState<string | null>(null);
   const [tolerance, setTolerance] = useState(DEFAULT_TOLERANCE);
+  const [zoom, setZoom] = useState(100); // percent, 50-200
   const { runFloodFill, runRecolor } = useCanvasWorker();
 
   useEffect(() => {
@@ -202,14 +203,30 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
             />
             <span className="w-6 tabular-nums text-graphite">{tolerance}</span>
           </label>
+          <label className="label-mono flex items-center gap-3 text-graphite/70">
+            <span>{dict.studio.zoomLabel}</span>
+            <input
+              type="range"
+              min={50}
+              max={200}
+              step={10}
+              value={zoom}
+              onChange={(event) => setZoom(Number(event.target.value))}
+              className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+            />
+            <span className="w-10 tabular-nums text-graphite">{zoom}%</span>
+          </label>
         </div>
-        <canvas
-          ref={canvasRef}
-          onClick={handleCanvasClick}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={handleCanvasDrop}
-          className="block w-full cursor-crosshair border border-hairline"
-        />
+        <div className="overflow-auto border border-hairline">
+          <canvas
+            ref={canvasRef}
+            onClick={handleCanvasClick}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleCanvasDrop}
+            style={{ width: `${zoom}%`, height: "auto" }}
+            className="block cursor-crosshair"
+          />
+        </div>
       </div>
       <aside className="space-y-8">
         <section>

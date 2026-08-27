@@ -68,6 +68,7 @@ export const ne: Dictionary = {
     uploaderErrorDecodeFailed: "त्यो तस्बिर पढ्न सकिएन — अर्को फोटो प्रयास गर्नुहोस्।",
     canvasStepLabel: "चरण २ को ३ — सतहमा क्लिक गर्नुहोस्",
     sensitivityLabel: "संवेदनशीलता",
+    zoomLabel: "जुम",
     selectedSurfacesHeading: "छानिएका सतहहरू",
     colorStepLabel: "चरण ३ को ३ — रङ छान्नुहोस्",
     regionsEmptyState: "रङ्ग्याउन भित्ता, ट्रिम, वा छाना छान्न फोटोमा कुनै ठाउँमा क्लिक गर्नुहोस्।",

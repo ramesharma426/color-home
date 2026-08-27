@@ -59,6 +59,7 @@ export interface Dictionary {
     uploaderErrorDecodeFailed: string;
     canvasStepLabel: string;
     sensitivityLabel: string;
+    zoomLabel: string;
     selectedSurfacesHeading: string;
     colorStepLabel: string;
     regionsEmptyState: string;

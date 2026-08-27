@@ -69,6 +69,7 @@ export const en: Dictionary = {
     uploaderErrorDecodeFailed: "Couldn't read that image — try a different photo.",
     canvasStepLabel: "Step 2 of 3 — click a surface",
     sensitivityLabel: "Sensitivity",
+    zoomLabel: "Zoom",
     selectedSurfacesHeading: "Selected surfaces",
     colorStepLabel: "Step 3 of 3 — choose a color",
     regionsEmptyState: "Click a spot on the photo to select a wall, trim, or roof to recolor.",

@@ -14,7 +14,7 @@ export default function StudioPage() {
     <div className="min-h-screen">
       <SiteNav locale="en" />
 
-      <main className="mx-auto max-w-shell px-5 py-10 sm:px-8">
+      <main className="mx-auto max-w-[90rem] px-5 py-10 sm:px-8">
         <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
           <div>
             <p className="label-mono text-skylight">{dict.studio.eyebrow}</p>
