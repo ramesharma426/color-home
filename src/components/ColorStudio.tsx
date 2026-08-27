@@ -173,7 +173,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   }
 
   function handleLassoPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (activeTool !== "lasso" || event.button !== 0) return;
+    if (activeTool !== "lasso" || event.button !== 0 || isSpacePanningRef.current) return;
     const point = canvasPointFromEvent(event);
     if (!point) return;
     lassoPathRef.current = [point];
@@ -181,7 +181,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   }
 
   function handleLassoPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (activeTool !== "lasso" || lassoPathRef.current.length === 0) return;
+    if (activeTool !== "lasso" || lassoPathRef.current.length === 0 || isSpacePanningRef.current) return;
     const point = canvasPointFromEvent(event);
     if (!point) return;
     lassoPathRef.current.push(point);
