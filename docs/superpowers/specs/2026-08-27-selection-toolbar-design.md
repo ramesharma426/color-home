@@ -98,10 +98,21 @@ functions, DOM-free, unit-testable):
   interpolating between points so a fast drag doesn't leave gaps. Selection
   Brush: pointerdown/move paints, pointerup commits, radius comes from the
   new brush-size slider.
-- **`contourTrace.ts`** — purely cosmetic, used only for the marching-ants
-  visual, never for recoloring. Moore-neighbor boundary tracing turns a
-  region's mask into an ordered polyline. The overlay canvas effect strokes
-  this polyline with `ctx.setLineDash([4, 4])` and an incrementing
+- **Contour tracing for the marching-ants visual** — purely cosmetic, never
+  used for recoloring. **Revised after this spec's initial approval:**
+  research done while writing the implementation plan found that a
+  hand-rolled single-component boundary tracer (as originally planned here)
+  would silently fail to outline a region made of multiple disconnected
+  mask patches — a real, already-shipped case, since a Ctrl+click merge can
+  span several disconnected patches in one region. `d3-contour` (ISC
+  license, one dependency — `d3-array`, also ISC) is adopted instead: it's
+  a mature, widely-used library built for exactly this scalar-field-to-polygon
+  problem and correctly handles multiple disconnected regions and holes.
+  This is the project's first external runtime dependency, and a
+  deliberate, narrow exception to this project's "no canvas libraries"
+  stance — it touches only this cosmetic outline, never flood fill, recolor,
+  or any other pixel math. The overlay canvas effect strokes the returned
+  polygon(s) with `ctx.setLineDash([4, 4])` and an incrementing
   `lineDashOffset`, animated via `requestAnimationFrame` (capped ~20fps).
   This replaces Task 27's solid highlight outline for the active region.
 
@@ -117,10 +128,13 @@ needed — `RegionList`, `PaletteBrowser`, the border-color feature, and
 
 ## Error handling / edge cases
 
-- Polygonal Lasso closed with fewer than 3 points, or a zero-movement
-  Lasso/Brush drag (a plain click with no actual path): silently discarded,
-  no new region created — consistent with how existing degenerate input is
-  already handled elsewhere in the Studio.
+- Polygonal Lasso closed with fewer than 3 points, or a zero-movement Lasso
+  drag (a plain click with no actual path): silently discarded, no new
+  region created — consistent with how existing degenerate input is already
+  handled elsewhere in the Studio. A zero-movement Brush click is treated
+  differently and intentionally: it stamps a single dot at that spot, the
+  same way a real brush tool works on a single click — this isn't
+  degenerate input, so it isn't discarded.
 - Escape cancels only an in-progress Polygonal Lasso; harmless no-op for
   every other tool/state.
 - Spacebar-pan is suppressed while any text input has focus.

@@ -18,6 +18,7 @@
 - All pixel processing (flood fill, recolor) must be usable without a DOM — implemented as pure functions over a plain `PixelBuffer` shape, not the browser's `ImageData` class directly, so they run in Vitest's default `node` environment with no `jsdom`.
 - Photos are downscaled to a max of 1600px on the long edge before any pixel processing.
 - Berger hex values in `src/data/palettes/berger-yellows-oranges.ts` are **visually estimated** from the photographed swatch card (the card itself gives no hex, only name + product code). This must be stated in a code comment and surfaced in the Colors page UI, not just the doc.
+- **Amendment (2026-08-27, Task 34):** the "no canvas library" constraint gets one narrow, deliberate exception — `d3-contour` (ISC license, one dependency: `d3-array`, also ISC) is added solely to trace a selection mask's outline for the marching-ants visual. It is never used for flood fill, recolor, or any other pixel math, all of which stay hand-written per the original constraint.
 
 ---
 
@@ -2977,6 +2978,1220 @@ Run: `npm test` — must stay at 37/37 (this task is interaction-only, no logic 
 ```bash
 git add src/components/ColorStudio.tsx
 git commit -m "feat: add click-and-drag panning when zoomed in"
+```
+
+---
+
+## Plan expansion (2026-08-27): Photoshop-style selection toolbar, Phase 1
+
+Added per explicit owner request, brainstormed and approved via the design spec at `docs/superpowers/specs/2026-08-27-selection-toolbar-design.md` — read that spec for the full rationale (scope boundaries, feasibility notes on the deferred tools, and why panning had to change). Summary: adds Lasso, Polygonal Lasso, and a Selection Brush alongside the existing Magic Wand, all switchable from a new toolbar, plus an authentic animated dashed "marching ants" selection border (replacing Task 27's solid highlight outline). Quick Selection, Magnetic Lasso, and Object Selection are explicitly out of scope for this phase (see the spec's "Follow-up" section).
+
+Tasks 32-33 are pure, independently testable math modules with no UI dependency. Task 34 (marching ants) depends only on the existing Region/mask model and is independent of every other task in this batch — it could be built and reviewed in parallel with 32/33. Task 35 introduces the `activeTool` toolbar state itself and revises Task 31's pan implementation (an explicit Hand tool + Spacebar-hold, replacing the old movement-threshold heuristic, which would otherwise misfire on every Lasso/Brush drag). Tasks 36-38 each wire one new tool's canvas interaction and depend on Task 35's toolbar state plus their respective math module (32 or 33).
+
+Dispatch order: 32 → 33 → 34 → 35 → 36 → 37 → 38.
+
+---
+
+### Task 32: `polygonMask.ts` — scanline polygon-to-mask rasterization
+
+**Files:**
+- Create: `src/lib/canvas/polygonMask.ts`
+- Test: `src/lib/canvas/polygonMask.test.ts`
+
+**Interfaces:**
+- Produces: `export interface Point { x: number; y: number; }` and `export function polygonToMask(points: Point[], width: number, height: number): Uint8Array` — Task 33 imports `Point` from this file (does not redefine it); Tasks 36-37 call `polygonToMask` directly.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// src/lib/canvas/polygonMask.test.ts
+import { describe, it, expect } from "vitest";
+import { polygonToMask } from "./polygonMask";
+
+describe("polygonToMask", () => {
+  it("fills a square exactly", () => {
+    const mask = polygonToMask(
+      [
+        { x: 2, y: 2 },
+        { x: 6, y: 2 },
+        { x: 6, y: 6 },
+        { x: 2, y: 6 },
+      ],
+      10,
+      10
+    );
+    expect(mask[4 * 10 + 4]).toBe(1); // center of the square
+    expect(mask[0 * 10 + 0]).toBe(0); // outside, top-left corner
+    expect(mask[9 * 10 + 9]).toBe(0); // outside, bottom-right corner
+  });
+
+  it("fills a triangle", () => {
+    const mask = polygonToMask(
+      [
+        { x: 5, y: 1 },
+        { x: 9, y: 9 },
+        { x: 1, y: 9 },
+      ],
+      10,
+      10
+    );
+    expect(mask[8 * 10 + 5]).toBe(1); // near the base, centered under the apex
+    expect(mask[0 * 10 + 0]).toBe(0); // above the apex, outside
+  });
+
+  it("returns an empty mask for fewer than 3 points", () => {
+    const mask = polygonToMask(
+      [
+        { x: 1, y: 1 },
+        { x: 2, y: 2 },
+      ],
+      10,
+      10
+    );
+    expect(mask.every((v) => v === 0)).toBe(true);
+  });
+
+  it("returns a mask sized width * height", () => {
+    const mask = polygonToMask(
+      [
+        { x: 0, y: 0 },
+        { x: 4, y: 0 },
+        { x: 4, y: 4 },
+        { x: 0, y: 4 },
+      ],
+      10,
+      10
+    );
+    expect(mask.length).toBe(100);
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run src/lib/canvas/polygonMask.test.ts`
+Expected: FAIL — `polygonMask.ts` doesn't exist yet.
+
+- [ ] **Step 3: Implement `polygonMask.ts`**
+
+```ts
+// src/lib/canvas/polygonMask.ts
+export interface Point {
+  x: number;
+  y: number;
+}
+
+// Standard scanline point-in-polygon fill (even-odd rule): for each row,
+// find where the polygon's edges cross that row's horizontal center line,
+// sort the crossings, and fill between each pair.
+export function polygonToMask(points: Point[], width: number, height: number): Uint8Array {
+  const mask = new Uint8Array(width * height);
+  if (points.length < 3) return mask;
+
+  for (let y = 0; y < height; y++) {
+    const scanY = y + 0.5;
+    const intersections: number[] = [];
+
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      if (a.y === b.y) continue; // horizontal edges never cross a scanline
+      if ((scanY >= a.y && scanY < b.y) || (scanY >= b.y && scanY < a.y)) {
+        const t = (scanY - a.y) / (b.y - a.y);
+        intersections.push(a.x + t * (b.x - a.x));
+      }
+    }
+
+    intersections.sort((x1, x2) => x1 - x2);
+
+    for (let i = 0; i + 1 < intersections.length; i += 2) {
+      const xStart = Math.max(0, Math.ceil(intersections[i] - 0.5));
+      const xEnd = Math.min(width - 1, Math.floor(intersections[i + 1] - 0.5));
+      for (let x = xStart; x <= xEnd; x++) {
+        mask[y * width + x] = 1;
+      }
+    }
+  }
+
+  return mask;
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx vitest run src/lib/canvas/polygonMask.test.ts`
+Expected: PASS, 4/4.
+
+- [ ] **Step 5: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 41/41 (37 baseline + 4 new).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/canvas/polygonMask.ts src/lib/canvas/polygonMask.test.ts
+git commit -m "feat: add scanline polygon-to-mask rasterization"
+```
+
+---
+
+### Task 33: `brushMask.ts` — brush-stroke-to-mask painting
+
+**Files:**
+- Create: `src/lib/canvas/brushMask.ts`
+- Test: `src/lib/canvas/brushMask.test.ts`
+
+**Interfaces:**
+- Consumes: `Point` from `src/lib/canvas/polygonMask.ts` (Task 32) — imported, not redefined.
+- Produces: `export function paintBrushStroke(existingMask: Uint8Array, width: number, height: number, points: Point[], radius: number): Uint8Array`. Task 38 calls this directly. Pure — returns a new array, never mutates `existingMask`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// src/lib/canvas/brushMask.test.ts
+import { describe, it, expect } from "vitest";
+import { paintBrushStroke } from "./brushMask";
+
+describe("paintBrushStroke", () => {
+  it("stamps a filled circle around a single point", () => {
+    const empty = new Uint8Array(20 * 20);
+    const mask = paintBrushStroke(empty, 20, 20, [{ x: 10, y: 10 }], 3);
+    expect(mask[10 * 20 + 10]).toBe(1); // center
+    expect(mask[10 * 20 + 16]).toBe(0); // 6px away — outside a radius-3 circle
+  });
+
+  it("connects two far-apart points with no gaps", () => {
+    const empty = new Uint8Array(30 * 10);
+    // 20px apart with radius 2 — without interpolation there would be an
+    // unpainted gap between the two stamped circles.
+    const mask = paintBrushStroke(
+      empty,
+      30,
+      10,
+      [
+        { x: 2, y: 5 },
+        { x: 22, y: 5 },
+      ],
+      2
+    );
+    expect(mask[5 * 30 + 12]).toBe(1); // path midpoint must be filled
+  });
+
+  it("does not mutate the input mask", () => {
+    const empty = new Uint8Array(10 * 10);
+    paintBrushStroke(empty, 10, 10, [{ x: 5, y: 5 }], 2);
+    expect(empty.every((v) => v === 0)).toBe(true);
+  });
+
+  it("unions with an existing mask rather than replacing it", () => {
+    const existing = new Uint8Array(10 * 10);
+    existing[0] = 1; // pixel (0,0) already selected
+    const mask = paintBrushStroke(existing, 10, 10, [{ x: 8, y: 8 }], 2);
+    expect(mask[0]).toBe(1); // still selected
+    expect(mask[8 * 10 + 8]).toBe(1); // newly painted
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run src/lib/canvas/brushMask.test.ts`
+Expected: FAIL — `brushMask.ts` doesn't exist yet.
+
+- [ ] **Step 3: Implement `brushMask.ts`**
+
+```ts
+// src/lib/canvas/brushMask.ts
+import type { Point } from "./polygonMask";
+
+function stampCircle(mask: Uint8Array, width: number, height: number, cx: number, cy: number, radius: number) {
+  const minX = Math.max(0, Math.floor(cx - radius));
+  const maxX = Math.min(width - 1, Math.ceil(cx + radius));
+  const minY = Math.max(0, Math.floor(cy - radius));
+  const maxY = Math.min(height - 1, Math.ceil(cy + radius));
+  const radiusSquared = radius * radius;
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      if (dx * dx + dy * dy <= radiusSquared) {
+        mask[y * width + x] = 1;
+      }
+    }
+  }
+}
+
+// Unions filled circles along a pointer path into a mask. Interpolates
+// between consecutive points at roughly radius/2 spacing so a fast drag
+// (which fires far fewer pointermove events than pixels crossed) doesn't
+// leave gaps in the stroke.
+export function paintBrushStroke(
+  existingMask: Uint8Array,
+  width: number,
+  height: number,
+  points: Point[],
+  radius: number
+): Uint8Array {
+  const mask = new Uint8Array(existingMask);
+  if (points.length === 0) return mask;
+
+  stampCircle(mask, width, height, points[0].x, points[0].y, radius);
+
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const distance = Math.hypot(b.x - a.x, b.y - a.y);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(1, radius / 2)));
+    for (let step = 1; step <= steps; step++) {
+      const t = step / steps;
+      stampCircle(mask, width, height, a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), radius);
+    }
+  }
+
+  return mask;
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx vitest run src/lib/canvas/brushMask.test.ts`
+Expected: PASS, 4/4.
+
+- [ ] **Step 5: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 45/45 (41 from Task 32 + 4 new).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/canvas/brushMask.ts src/lib/canvas/brushMask.test.ts
+git commit -m "feat: add brush-stroke-to-mask painting"
+```
+
+---
+
+### Task 34: Marching-ants selection border (via `d3-contour`)
+
+**Added per explicit owner request, after live research during brainstorming (see ledger and `docs/superpowers/specs/2026-08-27-selection-toolbar-design.md`):** replaces Task 27's solid highlight outline with an authentic animated dashed border. `d3-contour` (ISC license; one dependency, `d3-array`, also ISC) is adopted instead of a hand-rolled boundary tracer specifically because it correctly handles a region made of **multiple disconnected mask patches** — a real, already-shipped case in this app (Task 28's Ctrl+click merge can span several disconnected patches in one region) that a simple single-component tracer would silently miss.
+
+**Files:**
+- Modify: `package.json` (add `d3-contour` dependency)
+- Modify: `src/components/ColorStudio.tsx:278-307` (the region-highlight `useEffect`)
+
+**Interfaces:** unchanged externally — this only changes what the overlay canvas draws, not any Region/mask data.
+
+- [ ] **Step 1: Install the dependency**
+
+Run: `npm install d3-contour`
+
+- [ ] **Step 2: Replace the region-highlight effect**
+
+Find this existing `useEffect` in `src/components/ColorStudio.tsx` (currently lines 278-307):
+
+```tsx
+  // Draw a highlight ring around the currently active region on a separate
+  // overlay canvas stacked over the main one, so the selection is visible on
+  // screen without ever being baked into the composited image that
+  // DownloadButton reads from canvasRef.
+  useEffect(() => {
+    const overlay = overlayCanvasRef.current;
+    const baseBuffer = baseBufferRef.current;
+    if (!overlay || !baseBuffer) return;
+
+    overlay.width = baseBuffer.width;
+    overlay.height = baseBuffer.height;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    if (!activeRegion) return;
+
+    const ring = computeBorderMask(activeRegion.mask, baseBuffer.width, baseBuffer.height, 2);
+    const imageData = ctx.createImageData(overlay.width, overlay.height);
+    for (let i = 0; i < ring.length; i++) {
+      if (!ring[i]) continue;
+      const offset = i * 4;
+      imageData.data[offset] = 255; // bright magenta highlight — distinct from any
+      imageData.data[offset + 1] = 0; // paint color a user could realistically pick,
+      imageData.data[offset + 2] = 255; // so it always reads as "this is UI, not paint"
+      imageData.data[offset + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }, [regions, activeRegionId]);
+```
+
+Replace it with:
+
+```tsx
+  // Draw an animated dashed "marching ants" outline around the currently
+  // active region on a separate overlay canvas stacked over the main one,
+  // so the selection is visible on screen without ever being baked into the
+  // composited image that DownloadButton reads from canvasRef. d3-contour
+  // (not a hand-rolled tracer) is used because it correctly outlines every
+  // disconnected patch of a region — a Ctrl+click merge (Task 28) can leave
+  // one region spanning several unconnected patches, and a single-component
+  // tracer would silently miss all but the first.
+  useEffect(() => {
+    const overlay = overlayCanvasRef.current;
+    const baseBuffer = baseBufferRef.current;
+    if (!overlay || !baseBuffer) return;
+
+    overlay.width = baseBuffer.width;
+    overlay.height = baseBuffer.height;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    if (!activeRegion) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      return;
+    }
+
+    const generator = contours().size([baseBuffer.width, baseBuffer.height]).smooth(false);
+    const multiPolygon = generator.contour(activeRegion.mask, 0.5);
+
+    let animationFrameId: number;
+    let lastFrameTime = 0;
+    let dashOffset = 0;
+    const FRAME_INTERVAL_MS = 50; // ~20fps — plenty smooth, cheap to keep running
+
+    function drawFrame(time: number) {
+      if (time - lastFrameTime >= FRAME_INTERVAL_MS) {
+        lastFrameTime = time;
+        dashOffset = (dashOffset + 1) % 8;
+
+        ctx!.clearRect(0, 0, overlay!.width, overlay!.height);
+        ctx!.setLineDash([4, 4]);
+        ctx!.lineDashOffset = -dashOffset;
+        ctx!.strokeStyle = "#ff00ff"; // bright magenta — distinct from any paint
+        ctx!.lineWidth = 1; // color a user could realistically pick
+        for (const polygon of multiPolygon.coordinates) {
+          for (const ring of polygon) {
+            ctx!.beginPath();
+            ctx!.moveTo(ring[0][0], ring[0][1]);
+            for (let i = 1; i < ring.length; i++) ctx!.lineTo(ring[i][0], ring[i][1]);
+            ctx!.stroke();
+          }
+        }
+      }
+      animationFrameId = requestAnimationFrame(drawFrame);
+    }
+
+    animationFrameId = requestAnimationFrame(drawFrame);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [regions, activeRegionId]);
+```
+
+Add the import near the top of the file, alongside the other `@/lib/canvas` imports:
+
+```tsx
+import { contours } from "d3-contour";
+```
+
+`computeBorderMask` is still used elsewhere in this file (the fill/border compositing in `render()` and `handleBorderColorSelect`) — do not remove its import.
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Upload a photo, select a region with Magic Wand, confirm an animated dashed magenta border appears around it (not a solid ring).
+- Ctrl+click a second, disconnected spot to merge it into the same region (Task 28's merge), confirm the dashed border now outlines **both** disconnected patches, not just the first.
+- Switch to a different region, confirm the border immediately moves to it.
+- Deselect (no active region), confirm the border disappears and the animation stops (no console warnings about a leaked `requestAnimationFrame`).
+
+- [ ] **Step 4: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 45/45 (unchanged; this task adds no unit tests, consistent with how Task 27's original highlight effect was verified — hand-traced + manual browser check, not unit-tested interaction code).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add package.json package-lock.json src/components/ColorStudio.tsx
+git commit -m "feat: replace solid region highlight with animated marching-ants border"
+```
+
+---
+
+### Task 35: Selection toolbar, Hand tool, and pan revision
+
+**Files:**
+- Create: `src/components/SelectionToolbar.tsx`
+- Modify: `src/dictionaries/types.ts` (add 5 tool-label keys to the `studio` group)
+- Modify: `src/dictionaries/en.ts`, `src/dictionaries/ne.ts` (add the same 5 keys)
+- Modify: `src/components/ColorStudio.tsx` (new `activeTool` state, revised pan handlers, JSX wiring)
+
+**Interfaces:**
+- Produces: `export type SelectionTool = "magicWand" | "lasso" | "polygonLasso" | "brush" | "hand"` and `export function SelectionToolbar({ activeTool, onSelectTool }: { activeTool: SelectionTool; onSelectTool: (tool: SelectionTool) => void })`, both from `src/components/SelectionToolbar.tsx`. Tasks 36-38 import `SelectionTool` from here and read `activeTool` state (defined in this task) from `ColorStudio.tsx`.
+
+- [ ] **Step 1: Add the 5 dictionary keys**
+
+In `src/dictionaries/types.ts`, inside the `studio` interface block, add (anywhere within that block, e.g. right after `downloadButtonLabel: string;`):
+
+```ts
+    toolMagicWandLabel: string;
+    toolLassoLabel: string;
+    toolPolygonLassoLabel: string;
+    toolBrushLabel: string;
+    toolHandLabel: string;
+```
+
+In `src/dictionaries/en.ts`, inside the `studio` object, add (matching position, e.g. right after `downloadButtonLabel: "Download result",`):
+
+```ts
+    toolMagicWandLabel: "Magic Wand",
+    toolLassoLabel: "Lasso",
+    toolPolygonLassoLabel: "Polygonal Lasso",
+    toolBrushLabel: "Selection Brush",
+    toolHandLabel: "Hand (pan)",
+```
+
+In `src/dictionaries/ne.ts`, inside the `studio` object, add (matching position, e.g. right after `downloadButtonLabel: "नतिजा डाउनलोड गर्नुहोस्",`):
+
+```ts
+    toolMagicWandLabel: "म्याजिक वान्ड",
+    toolLassoLabel: "लासो",
+    toolPolygonLassoLabel: "बहुभुज लासो",
+    toolBrushLabel: "चयन ब्रस",
+    toolHandLabel: "हात (सार्नुहोस्)",
+```
+
+- [ ] **Step 2: Verify `tsc` catches a missing key (proves the Dictionary interface is doing its job)**
+
+Run: `npx tsc --noEmit` after Step 1's `types.ts` edit but before editing `en.ts`/`ne.ts`.
+Expected: FAIL — `en.ts` and `ne.ts` are missing the 5 new required keys. This is expected and confirms the interface has no index signature (per this project's established i18n discipline). Now apply the `en.ts`/`ne.ts` edits from Step 1 and re-run — expected: PASS.
+
+- [ ] **Step 3: Create `SelectionToolbar.tsx`**
+
+```tsx
+// src/components/SelectionToolbar.tsx
+"use client";
+
+import { getDictionary } from "@/lib/dictionary";
+import type { Locale } from "@/dictionaries/types";
+
+export type SelectionTool = "magicWand" | "lasso" | "polygonLasso" | "brush" | "hand";
+
+export function SelectionToolbar({
+  activeTool,
+  onSelectTool,
+  locale,
+}: {
+  activeTool: SelectionTool;
+  onSelectTool: (tool: SelectionTool) => void;
+  locale: Locale;
+}) {
+  const dict = getDictionary(locale);
+  const tools: Array<{ id: SelectionTool; label: string; glyph: string }> = [
+    { id: "magicWand", label: dict.studio.toolMagicWandLabel, glyph: "✨" },
+    { id: "lasso", label: dict.studio.toolLassoLabel, glyph: "◌" },
+    { id: "polygonLasso", label: dict.studio.toolPolygonLassoLabel, glyph: "⬠" },
+    { id: "brush", label: dict.studio.toolBrushLabel, glyph: "●" },
+    { id: "hand", label: dict.studio.toolHandLabel, glyph: "✋" },
+  ];
+
+  return (
+    <div className="flex flex-col gap-1 border-r border-hairline pr-2">
+      {tools.map((tool) => (
+        <button
+          key={tool.id}
+          type="button"
+          title={tool.label}
+          aria-label={tool.label}
+          aria-pressed={activeTool === tool.id}
+          onClick={() => onSelectTool(tool.id)}
+          className={
+            activeTool === tool.id
+              ? "flex h-9 w-9 items-center justify-center border border-skylight bg-skylight/10 text-lg"
+              : "flex h-9 w-9 items-center justify-center border border-transparent text-lg text-graphite/60 hover:border-hairline-strong"
+          }
+        >
+          {tool.glyph}
+        </button>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 4: Add `activeTool` state and Spacebar tracking to `ColorStudio.tsx`**
+
+Add the import near the other component imports:
+
+```tsx
+import { SelectionToolbar, type SelectionTool } from "./SelectionToolbar";
+```
+
+Near the existing `zoom`/`borderPickerOpen` state, add:
+
+```tsx
+const [activeTool, setActiveTool] = useState<SelectionTool>("magicWand");
+const isSpacePanningRef = useRef(false);
+```
+
+Add a new `useEffect` (anywhere alongside the other effects) tracking the Spacebar as a temporary pan override, guarded so it doesn't fire while a text input has focus (e.g. the catalog search box):
+
+```tsx
+useEffect(() => {
+  function isTypingTarget(target: EventTarget | null) {
+    const tag = (target as HTMLElement | null)?.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA";
+  }
+  function handleKeyDown(event: KeyboardEvent) {
+    if (event.code === "Space" && !isTypingTarget(event.target)) {
+      isSpacePanningRef.current = true;
+    }
+  }
+  function handleKeyUp(event: KeyboardEvent) {
+    if (event.code === "Space") isSpacePanningRef.current = false;
+  }
+  window.addEventListener("keydown", handleKeyDown);
+  window.addEventListener("keyup", handleKeyUp);
+  return () => {
+    window.removeEventListener("keydown", handleKeyDown);
+    window.removeEventListener("keyup", handleKeyUp);
+  };
+}, []);
+```
+
+- [ ] **Step 5: Revise the pan handlers to be explicit instead of heuristic**
+
+Replace the existing pan-related refs (currently):
+
+```tsx
+const wrapperRef = useRef<HTMLDivElement>(null);
+const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; dragged: boolean } | null>(null);
+const suppressNextClickRef = useRef(false);
+const [isPanning, setIsPanning] = useState(false);
+```
+
+with:
+
+```tsx
+const wrapperRef = useRef<HTMLDivElement>(null);
+const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+const [isPanning, setIsPanning] = useState(false);
+```
+
+(`suppressNextClickRef` and the per-pan `dragged` flag are gone — panning is now decided unambiguously at pointerdown, so there's no click left to suppress.)
+
+Replace the three pan handler functions (`handleWrapperPointerDown`, `handleWrapperPointerMove`, `handleWrapperPointerUp`) with:
+
+```tsx
+function handleWrapperPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+  if (event.button !== 0) return; // left button only — don't interfere with right-click
+  if (activeTool !== "hand" && !isSpacePanningRef.current) return;
+  const wrapper = wrapperRef.current;
+  if (!wrapper) return;
+  panStateRef.current = {
+    startX: event.clientX,
+    startY: event.clientY,
+    scrollLeft: wrapper.scrollLeft,
+    scrollTop: wrapper.scrollTop,
+  };
+  setIsPanning(true);
+}
+
+function handleWrapperPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+  const pan = panStateRef.current;
+  const wrapper = wrapperRef.current;
+  if (!pan || !wrapper) return;
+  wrapper.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
+  wrapper.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
+}
+
+function handleWrapperPointerUp() {
+  panStateRef.current = null;
+  setIsPanning(false);
+}
+```
+
+- [ ] **Step 6: Gate Magic Wand's click handler behind the active tool**
+
+At the very top of `handleCanvasClick` (which currently starts with the now-removed `suppressNextClickRef` guard from Task 31), replace:
+
+```tsx
+async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  if (suppressNextClickRef.current) {
+    suppressNextClickRef.current = false;
+    return;
+  }
+  const canvas = canvasRef.current;
+```
+
+with:
+
+```tsx
+async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  if (activeTool !== "magicWand") return;
+  const canvas = canvasRef.current;
+```
+
+Leave the rest of `handleCanvasClick` completely unchanged. `handleCanvasContextMenu` already just calls `handleCanvasClick`, so right-click now correctly only acts while Magic Wand is the active tool (there is no defined right-click behavior for Lasso/Polygonal Lasso/Brush/Hand in this phase — this is intentional, not a gap).
+
+- [ ] **Step 7: Wire the toolbar into the JSX and gate the sensitivity slider**
+
+Find the sensitivity `<label>` inside the controls row (currently unconditional) and wrap it so it only shows for Magic Wand:
+
+```tsx
+{activeTool === "magicWand" && (
+  <label className="label-mono flex items-center gap-3 text-graphite/70">
+    <span>{dict.studio.sensitivityLabel}</span>
+    <input
+      type="range"
+      min={5}
+      max={80}
+      value={tolerance}
+      onChange={(event) => setTolerance(Number(event.target.value))}
+      className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+    />
+    <span className="w-6 tabular-nums text-graphite">{tolerance}</span>
+  </label>
+)}
+```
+
+Find the wrapper `<div ref={wrapperRef} className="relative overflow-auto border border-hairline" ...>` and its two `<canvas>` children, and restructure so the toolbar sits beside it:
+
+```tsx
+<div className="flex gap-3">
+  <SelectionToolbar activeTool={activeTool} onSelectTool={setActiveTool} locale={locale} />
+  <div
+    ref={wrapperRef}
+    className="relative flex-1 overflow-auto border border-hairline"
+    onPointerDown={handleWrapperPointerDown}
+    onPointerMove={handleWrapperPointerMove}
+    onPointerUp={handleWrapperPointerUp}
+    onPointerLeave={handleWrapperPointerUp}
+  >
+    <canvas
+      ref={canvasRef}
+      onClick={handleCanvasClick}
+      onContextMenu={handleCanvasContextMenu}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={handleCanvasDrop}
+      style={{ width: `${zoom}%`, height: "auto" }}
+      className={
+        isPanning
+          ? "block cursor-grabbing"
+          : activeTool === "hand"
+          ? "block cursor-grab"
+          : "block cursor-crosshair"
+      }
+    />
+    <canvas
+      ref={overlayCanvasRef}
+      style={{ width: `${zoom}%`, height: "auto" }}
+      className="pointer-events-none absolute left-0 top-0"
+    />
+  </div>
+</div>
+```
+
+(This is the same wrapper/canvas JSX as before, just indented one level deeper inside the new flex row, with the cursor className extended to show an open-hand cursor when the Hand tool is active but not currently panning.)
+
+- [ ] **Step 8: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Confirm the toolbar renders to the left of the photo with 5 buttons, Magic Wand highlighted by default.
+- Confirm Magic Wand still works exactly as before (click = new region, Ctrl+click = merge, right-click = new region) and the sensitivity slider only shows while Magic Wand is active.
+- Click the Hand tool, confirm dragging the (zoomed-in) photo now pans it, and the cursor shows an open hand when idle and a closed hand while dragging.
+- With Magic Wand active, hold Spacebar and drag — confirm this also pans (temporary override), and confirm a plain click (no Spacebar) still creates a region as normal.
+- Confirm dragging a color swatch from the sidebar onto the canvas (Task 19) still works regardless of the active tool.
+- Click Lasso, Polygonal Lasso, or Brush — confirm they're selectable (highlighted) even though they don't yet do anything on the canvas (Tasks 36-38 wire their behavior).
+
+- [ ] **Step 9: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 45/45 (unchanged; this task is UI/interaction wiring, no new unit-testable pure logic).
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/components/SelectionToolbar.tsx src/components/ColorStudio.tsx src/dictionaries/types.ts src/dictionaries/en.ts src/dictionaries/ne.ts
+git commit -m "feat: add selection toolbar with explicit Hand tool, revise pan to remove click-suppression heuristic"
+```
+
+---
+
+### Task 36: Wire the Lasso tool
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:**
+- Consumes: `polygonToMask` and `Point` from `src/lib/canvas/polygonMask.ts` (Task 32); `activeTool` state and `SelectionTool` type from Task 35.
+- Produces: no new exports — this only adds canvas interaction handlers used internally.
+
+- [ ] **Step 1: Add the import and a path-tracking ref**
+
+```tsx
+import { polygonToMask, type Point } from "@/lib/canvas/polygonMask";
+```
+
+Near `panStateRef`, add:
+
+```tsx
+const lassoPathRef = useRef<Point[]>([]);
+const [isDrawingLasso, setIsDrawingLasso] = useState(false);
+```
+
+- [ ] **Step 2: Add Lasso pointer handlers**
+
+Add these new functions near `handleCanvasClick`. They convert client coordinates to buffer pixel coordinates using the exact same `getBoundingClientRect`/scale math `handleCanvasClick` already uses:
+
+```tsx
+function canvasPointFromEvent(event: { clientX: number; clientY: number }): Point | null {
+  const canvas = canvasRef.current;
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: Math.round((event.clientX - rect.left) * scaleX),
+    y: Math.round((event.clientY - rect.top) * scaleY),
+  };
+}
+
+function handleLassoPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "lasso" || event.button !== 0) return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+  lassoPathRef.current = [point];
+  setIsDrawingLasso(true);
+}
+
+function handleLassoPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "lasso" || lassoPathRef.current.length === 0) return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+  lassoPathRef.current.push(point);
+}
+
+async function handleLassoPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "lasso" || lassoPathRef.current.length === 0) return;
+  const path = lassoPathRef.current;
+  lassoPathRef.current = [];
+  setIsDrawingLasso(false);
+
+  const baseBuffer = baseBufferRef.current;
+  if (!baseBuffer || path.length < 3) return; // too short a drag — silently discard
+
+  const newMask = polygonToMask(path, baseBuffer.width, baseBuffer.height);
+  await commitToolMask(newMask, event.ctrlKey || event.metaKey);
+}
+```
+
+- [ ] **Step 3: Extract the shared "commit a new mask" logic**
+
+Both the Lasso handler above and Tasks 37-38 need the exact same "merge into active region if Ctrl held, else create a new region" logic that `handleCanvasClick` already has inline. Extract it into a shared helper. Replace the body of `handleCanvasClick` from the `isMerge` check onward — currently:
+
+```tsx
+    const newMask = await runFloodFill(baseBuffer, x, y, tolerance);
+    const isMerge = (event.ctrlKey || event.metaKey) && activeRegionId;
+
+    if (isMerge) {
+      const activeRegion = regions.find((r) => r.id === activeRegionId);
+      if (!activeRegion) return;
+
+      const mergedMask = new Uint8Array(activeRegion.mask.length);
+      for (let i = 0; i < mergedMask.length; i++) {
+        mergedMask[i] = activeRegion.mask[i] || newMask[i] ? 1 : 0;
+      }
+
+      let recoloredData = activeRegion.recoloredData;
+      if (activeRegion.color) {
+        const recoloredBuffer = await runRecolor(baseBuffer, mergedMask, activeRegion.color);
+        recoloredData = recoloredBuffer.data;
+      }
+
+      setRegions((prev) =>
+        prev.map((r) => (r.id === activeRegionId ? { ...r, mask: mergedMask, recoloredData } : r))
+      );
+      return;
+    }
+
+    const id = crypto.randomUUID();
+    setRegions((prev) => [
+      ...prev,
+      { id, mask: newMask, color: null, label: `${dict.studio.regionLabelPrefix} ${prev.length + 1}` },
+    ]);
+    setActiveRegionId(id);
+  }
+```
+
+with:
+
+```tsx
+    const newMask = await runFloodFill(baseBuffer, x, y, tolerance);
+    await commitToolMask(newMask, (event.ctrlKey || event.metaKey) && Boolean(activeRegionId));
+  }
+
+  async function commitToolMask(newMask: Uint8Array, shouldMerge: boolean) {
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer) return;
+
+    if (shouldMerge) {
+      const activeRegion = regions.find((r) => r.id === activeRegionId);
+      if (!activeRegion) return;
+
+      const mergedMask = new Uint8Array(activeRegion.mask.length);
+      for (let i = 0; i < mergedMask.length; i++) {
+        mergedMask[i] = activeRegion.mask[i] || newMask[i] ? 1 : 0;
+      }
+
+      let recoloredData = activeRegion.recoloredData;
+      if (activeRegion.color) {
+        const recoloredBuffer = await runRecolor(baseBuffer, mergedMask, activeRegion.color);
+        recoloredData = recoloredBuffer.data;
+      }
+
+      setRegions((prev) =>
+        prev.map((r) => (r.id === activeRegionId ? { ...r, mask: mergedMask, recoloredData } : r))
+      );
+      return;
+    }
+
+    const id = crypto.randomUUID();
+    setRegions((prev) => [
+      ...prev,
+      { id, mask: newMask, color: null, label: `${dict.studio.regionLabelPrefix} ${prev.length + 1}` },
+    ]);
+    setActiveRegionId(id);
+  }
+```
+
+Note the `shouldMerge` computation for Magic Wand changed from `(event.ctrlKey || event.metaKey) && activeRegionId` (which could pass a string or `null`, not strictly boolean) to `(event.ctrlKey || event.metaKey) && Boolean(activeRegionId)` — a required cleanup since `commitToolMask`'s `shouldMerge` parameter is typed as a strict `boolean`, called from three different tools with three different modifier-reading sites.
+
+- [ ] **Step 4: Wire the Lasso pointer handlers onto the canvas**
+
+The canvas element already has `onClick`/`onContextMenu`/`onDragOver`/`onDrop`. Add the three pointer handlers alongside them:
+
+```tsx
+<canvas
+  ref={canvasRef}
+  onClick={handleCanvasClick}
+  onContextMenu={handleCanvasContextMenu}
+  onDragOver={(event) => event.preventDefault()}
+  onDrop={handleCanvasDrop}
+  onPointerDown={handleLassoPointerDown}
+  onPointerMove={handleLassoPointerMove}
+  onPointerUp={handleLassoPointerUp}
+  ...
+```
+
+Note pointer events on the canvas and pointer events on the wrapper (`handleWrapperPointerDown` etc., from Task 35) both fire — this is fine, since `handleLassoPointerDown` early-returns unless `activeTool === "lasso"`, and `handleWrapperPointerDown` early-returns unless `activeTool === "hand"` or Spacebar is held, so exactly one of them ever acts on a given drag.
+
+- [ ] **Step 5: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Lasso, drag a freeform loop around a distinct area of the photo, release — confirm a new region is created matching the drawn shape.
+- Ctrl+drag a second loop overlapping an existing region — confirm it merges instead of creating a new region.
+- Confirm a plain click with no real drag (path length &lt; 3) creates no region.
+- Switch back to Magic Wand and confirm its click/Ctrl-click/right-click behavior is completely unchanged.
+- Confirm Hand-tool panning and Spacebar-panning both still work and don't interfere with Lasso drawing when Lasso is the active tool (only one should ever act, per Step 4's note).
+
+- [ ] **Step 6: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 45/45 (unchanged; this task is canvas interaction wiring, already covered by Task 32's `polygonToMask` unit tests).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: wire the Lasso selection tool"
+```
+
+---
+
+### Task 37: Wire the Polygonal Lasso tool
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:**
+- Consumes: `polygonToMask`/`Point` (Task 32), `commitToolMask` (Task 36), `activeTool` (Task 35).
+- Produces: no new exports.
+
+- [ ] **Step 1: Add vertex-tracking state**
+
+Near `lassoPathRef`, add:
+
+```tsx
+const polygonPointsRef = useRef<Point[]>([]);
+const [polygonPreview, setPolygonPreview] = useState<Point[]>([]);
+```
+
+`polygonPreview` is mirrored React state (not just a ref) because it drives a live rubber-band preview line drawn on the overlay canvas — see Step 3.
+
+- [ ] **Step 2: Add click-to-place-vertex and close-detection handlers**
+
+```tsx
+const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
+
+function handlePolygonClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  if (activeTool !== "polygonLasso") return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+
+  const points = polygonPointsRef.current;
+  if (points.length >= 3) {
+    const start = points[0];
+    const distanceToStart = Math.hypot(point.x - start.x, point.y - start.y);
+    if (distanceToStart <= POLYGON_CLOSE_RADIUS) {
+      finishPolygon(event.ctrlKey || event.metaKey);
+      return;
+    }
+  }
+
+  points.push(point);
+  setPolygonPreview([...points]);
+}
+
+function handlePolygonDoubleClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  if (activeTool !== "polygonLasso") return;
+  event.preventDefault();
+  finishPolygon(event.ctrlKey || event.metaKey);
+}
+
+async function finishPolygon(shouldMerge: boolean) {
+  const points = polygonPointsRef.current;
+  polygonPointsRef.current = [];
+  setPolygonPreview([]);
+
+  const baseBuffer = baseBufferRef.current;
+  if (!baseBuffer || points.length < 3) return; // too few vertices — silently discard
+
+  const newMask = polygonToMask(points, baseBuffer.width, baseBuffer.height);
+  await commitToolMask(newMask, shouldMerge && Boolean(activeRegionId));
+}
+```
+
+- [ ] **Step 3: Cancel an in-progress polygon with Escape**
+
+Add a `useEffect` (alongside the Spacebar-tracking one from Task 35):
+
+```tsx
+useEffect(() => {
+  function handleEscape(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    polygonPointsRef.current = [];
+    setPolygonPreview([]);
+  }
+  window.addEventListener("keydown", handleEscape);
+  return () => window.removeEventListener("keydown", handleEscape);
+}, []);
+```
+
+- [ ] **Step 4: Draw the live rubber-band preview on the overlay canvas**
+
+Find the marching-ants `useEffect` from Task 34 (keyed on `[regions, activeRegionId]`). Add a **separate** new `useEffect` after it — do not merge the two, since this one has different dependencies and must not fight the marching-ants animation loop for the overlay canvas on every render:
+
+```tsx
+useEffect(() => {
+  if (activeTool !== "polygonLasso" || polygonPreview.length === 0) return;
+  const overlay = overlayCanvasRef.current;
+  if (!overlay) return;
+  const ctx = overlay.getContext("2d");
+  if (!ctx) return;
+
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "#ff00ff";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(polygonPreview[0].x, polygonPreview[0].y);
+  for (let i = 1; i < polygonPreview.length; i++) {
+    ctx.lineTo(polygonPreview[i].x, polygonPreview[i].y);
+  }
+  ctx.stroke();
+}, [polygonPreview, activeTool]);
+```
+
+This preview intentionally only redraws when a new vertex is placed (click), not on every mouse-move — a live line-to-cursor rubber band is a nice-to-have, not required by the spec, and is left out to keep this task's scope to what was asked.
+
+- [ ] **Step 5: Wire the click/double-click handlers onto the canvas**
+
+`onClick` is already wired to `handleCanvasClick` (Task 35 gates it to `activeTool === "magicWand"`, so it's already a no-op for `polygonLasso`). Add a second handler that composes both — replace:
+
+```tsx
+onClick={handleCanvasClick}
+```
+
+with:
+
+```tsx
+onClick={(event) => {
+  handleCanvasClick(event);
+  handlePolygonClick(event);
+}}
+onDoubleClick={handlePolygonDoubleClick}
+```
+
+- [ ] **Step 6: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Polygonal Lasso, click 4-5 points around a straight-edged feature (e.g. a trim board), then click back near the first point — confirm it closes and creates a region matching the polygon.
+- Repeat, but close via double-click instead — confirm the same result.
+- Start placing points, press Escape before closing — confirm the in-progress polygon is discarded with no region created.
+- Confirm Ctrl-held-while-closing merges into the active region instead of creating a new one.
+- Confirm Magic Wand, Lasso, Hand, and Spacebar-panning are all unaffected when Polygonal Lasso is not the active tool.
+
+- [ ] **Step 7: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 45/45 (unchanged; covered by Task 32's existing `polygonToMask` unit tests).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: wire the Polygonal Lasso selection tool"
+```
+
+---
+
+### Task 38: Wire the Selection Brush tool
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+- Modify: `src/dictionaries/types.ts`, `src/dictionaries/en.ts`, `src/dictionaries/ne.ts` (add one brush-size-label key)
+
+**Interfaces:**
+- Consumes: `paintBrushStroke` from `src/lib/canvas/brushMask.ts` (Task 33), `commitToolMask` (Task 36), `activeTool` (Task 35).
+- Produces: no new exports.
+
+- [ ] **Step 1: Add the dictionary key**
+
+In `src/dictionaries/types.ts`'s `studio` block, add:
+
+```ts
+    brushSizeLabel: string;
+```
+
+In `src/dictionaries/en.ts`'s `studio` object, add:
+
+```ts
+    brushSizeLabel: "Brush size",
+```
+
+In `src/dictionaries/ne.ts`'s `studio` object, add:
+
+```ts
+    brushSizeLabel: "ब्रस साइज",
+```
+
+- [ ] **Step 2: Add the import and brush state**
+
+```tsx
+import { paintBrushStroke } from "@/lib/canvas/brushMask";
+```
+
+Near `lassoPathRef`, add:
+
+```tsx
+const brushPathRef = useRef<Point[]>([]);
+const [brushSize, setBrushSize] = useState(15);
+```
+
+- [ ] **Step 3: Add brush pointer handlers**
+
+```tsx
+function handleBrushPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "brush" || event.button !== 0) return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+  brushPathRef.current = [point];
+}
+
+function handleBrushPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "brush" || brushPathRef.current.length === 0) return;
+  const point = canvasPointFromEvent(event);
+  if (!point) return;
+  brushPathRef.current.push(point);
+}
+
+async function handleBrushPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
+  if (activeTool !== "brush" || brushPathRef.current.length === 0) return;
+  const path = brushPathRef.current;
+  brushPathRef.current = [];
+
+  const baseBuffer = baseBufferRef.current;
+  if (!baseBuffer || path.length === 0) return;
+
+  const isMerge = (event.ctrlKey || event.metaKey) && Boolean(activeRegionId);
+  const baseMask = isMerge
+    ? regions.find((r) => r.id === activeRegionId)?.mask ?? new Uint8Array(baseBuffer.width * baseBuffer.height)
+    : new Uint8Array(baseBuffer.width * baseBuffer.height);
+
+  const newMask = paintBrushStroke(baseMask, baseBuffer.width, baseBuffer.height, path, brushSize);
+  await commitToolMask(newMask, isMerge);
+}
+```
+
+Note this tool always calls `paintBrushStroke` starting from either an empty mask (new region) or the active region's existing mask (merge) — unlike Magic Wand/Lasso/Polygonal Lasso, which compute a fresh mask and let `commitToolMask` do the OR-merge. This is necessary because a brush stroke is naturally additive-as-you-paint, and `commitToolMask`'s merge path expects `newMask` to already be the thing to OR in, not a delta — passing the existing mask as the brush's starting canvas produces the same end result through the same `commitToolMask` call.
+
+- [ ] **Step 4: Add the brush-size slider, shown only while Brush is active**
+
+In the controls row, alongside the (now-conditional) sensitivity slider and the zoom slider, add:
+
+```tsx
+{activeTool === "brush" && (
+  <label className="label-mono flex items-center gap-3 text-graphite/70">
+    <span>{dict.studio.brushSizeLabel}</span>
+    <input
+      type="range"
+      min={4}
+      max={60}
+      value={brushSize}
+      onChange={(event) => setBrushSize(Number(event.target.value))}
+      className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+    />
+    <span className="w-6 tabular-nums text-graphite">{brushSize}</span>
+  </label>
+)}
+```
+
+- [ ] **Step 5: Wire the brush pointer handlers onto the canvas**
+
+Add alongside the Lasso pointer handlers from Task 36 — all four tools' pointer handlers coexist on the same canvas element, each gated by its own `activeTool` check, so exactly one is ever live:
+
+```tsx
+onPointerDown={(event) => {
+  handleLassoPointerDown(event);
+  handleBrushPointerDown(event);
+}}
+onPointerMove={(event) => {
+  handleLassoPointerMove(event);
+  handleBrushPointerMove(event);
+}}
+onPointerUp={(event) => {
+  handleLassoPointerUp(event);
+  handleBrushPointerUp(event);
+}}
+```
+
+- [ ] **Step 6: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Brush, confirm the brush-size slider appears (and the sensitivity/nothing-else sliders don't).
+- Drag the brush across part of the photo, release — confirm a new region is created matching the painted stroke.
+- Ctrl+drag the brush over an existing region — confirm it adds to that region's mask rather than creating a new one.
+- Adjust brush size and confirm subsequent strokes are thicker/thinner accordingly.
+- Confirm Magic Wand, Lasso, Polygonal Lasso, and Hand/Spacebar-panning are all unaffected when Brush is not the active tool.
+
+- [ ] **Step 7: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 45/45 (unchanged; covered by Task 33's existing `paintBrushStroke` unit tests).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx src/dictionaries/types.ts src/dictionaries/en.ts src/dictionaries/ne.ts
+git commit -m "feat: wire the Selection Brush tool"
 ```
 
 ---
