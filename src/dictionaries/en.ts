@@ -80,7 +80,6 @@ export const en: Dictionary = {
     categoryTrim: "Trims",
     categoryRoof: "Roofs",
     paletteDisabledMessage: "Pick a surface first",
-    pickAnyColorLabel: "Or pick any color",
     paletteCaveat:
       "Berger colors shown are visually estimated from a printed swatch card — confirm against the physical fandeck before ordering paint.",
     downloadButtonLabel: "Download result",

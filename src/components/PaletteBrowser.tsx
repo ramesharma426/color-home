@@ -5,7 +5,6 @@ import { hexToRgb } from "@/lib/canvas/colorMath";
 import type { RGBColor } from "@/lib/canvas/types";
 import { getDictionary } from "@/lib/dictionary";
 import type { Locale } from "@/dictionaries/types";
-import { CatalogueBrowser } from "./CatalogueBrowser";
 
 export function PaletteBrowser({
   onSelect,
@@ -60,21 +59,8 @@ export function PaletteBrowser({
             </div>
           </div>
         ))}
-        <label className="flex items-center gap-3 border-t border-hairline-strong/60 pt-4 text-sm text-graphite/70">
-          <span>{dict.studio.pickAnyColorLabel}</span>
-          <input
-            type="color"
-            disabled={disabled}
-            onChange={(event) => onSelect(hexToRgb(event.target.value))}
-            className="h-8 w-12 align-middle"
-          />
-        </label>
       </div>
       <p className="mt-4 text-xs leading-relaxed text-graphite/75">{dict.studio.paletteCaveat}</p>
-      <div className="mt-6 border-t border-hairline-strong/60 pt-4">
-        <p className="mb-3 text-sm font-semibold text-graphite/70">Browse the full catalog</p>
-        <CatalogueBrowser onSelect={onSelect} disabled={disabled} />
-      </div>
     </div>
   );
 }

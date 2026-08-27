@@ -70,7 +70,6 @@ export interface Dictionary {
     categoryTrim: string;
     categoryRoof: string;
     paletteDisabledMessage: string;
-    pickAnyColorLabel: string;
     paletteCaveat: string;
     downloadButtonLabel: string;
   };

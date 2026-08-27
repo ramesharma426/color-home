@@ -79,7 +79,6 @@ export const ne: Dictionary = {
     categoryTrim: "ट्रिम",
     categoryRoof: "छाना",
     paletteDisabledMessage: "पहिले सतह छान्नुहोस्",
-    pickAnyColorLabel: "वा कुनै पनि रङ छान्नुहोस्",
     paletteCaveat:
       "देखाइएका Berger रङहरू छापिएको स्वाच कार्डबाट अनुमानित हुन् — पेन्ट अर्डर गर्नुअघि साँच्चैको फ्यान्डेकसँग जाँच्नुहोस्।",
     downloadButtonLabel: "नतिजा डाउनलोड गर्नुहोस्",
