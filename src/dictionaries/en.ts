@@ -1,6 +1,11 @@
 import type { Dictionary } from "./types";
 
 export const en: Dictionary = {
+  meta: {
+    htmlLang: "en",
+    title: "Color Home",
+    description: "Preview paint colors on your own home before you buy.",
+  },
   nav: {
     wordmark: "Color Home",
     studioLink: "Studio",

@@ -1,6 +1,11 @@
 export type Locale = "en" | "ne";
 
 export interface Dictionary {
+  meta: {
+    htmlLang: string; // the <html lang="..."> value for this locale
+    title: string; // document <title> / tab title
+    description: string; // <meta name="description">, also used for share cards
+  };
   nav: {
     wordmark: string;
     studioLink: string;
