@@ -2727,19 +2727,23 @@ git commit -m "feat: redesign Colors page with brand selection and search"
 
 ---
 
-### Task 30: Move "Browse the full catalog" out of the sidebar, full-width below the photo
+### Task 30: Move the full catalog below the photo, and remove all free-color pickers
 
-**Added per explicit owner feedback (2026-08-27):** "we have plenty of space below the image edit box, move the browse the full catalog below the image because the name of the color is cropped." Root cause: `PaletteBrowser.tsx`'s "Browse the full catalog" section (Task 29) renders `CatalogueBrowser`, whose swatch grid uses `lg:grid-cols-6` — a viewport-width breakpoint, not a container-width one. It's nested inside `ColorStudio.tsx`'s fixed `21rem` sidebar column, so at the `lg` breakpoint it tries to fit 6 columns into ~336px, making each swatch too narrow to show its color name without truncation.
+**Added per explicit owner feedback (2026-08-27), two related requests folded into one task since both touch the same two files:**
+
+1. "we have plenty of space below the image edit box, move the browse the full catalog below the image because the name of the color is cropped." Root cause: `PaletteBrowser.tsx`'s "Browse the full catalog" section (Task 29) renders `CatalogueBrowser`, whose swatch grid uses `lg:grid-cols-6` — a viewport-width breakpoint, not a container-width one. It's nested inside `ColorStudio.tsx`'s fixed `21rem` sidebar column, so at the `lg` breakpoint it tries to fit 6 columns into ~336px, making each swatch too narrow to show its color name without truncation.
+2. "remove the any color picker option, we cannot make any color in our machine" — clarified via follow-up: this applies to BOTH free-form color inputs in the Studio — the main palette's "Or pick any color" (`<input type="color">` in `PaletteBrowser.tsx`) and the border feature's color input (`<input type="color">` in `ColorStudio.tsx`) — since the underlying business constraint (the shop can only mix/order colors that exist in a real catalog, not arbitrary RGB values) applies equally to both. The border color must now also be chosen from the same curated swatches as the fill color, not freehand.
 
 **Files:**
-- Modify: `src/components/PaletteBrowser.tsx` (remove the "Browse the full catalog" section — revert to Task 23's pre-Task-29 scope: curated swatches + free picker + caveat only)
-- Modify: `src/components/ColorStudio.tsx` (add a new full-width section below the main two-column grid, rendering `CatalogueBrowser` there instead)
+- Modify: `src/components/PaletteBrowser.tsx` (remove the "Browse the full catalog" section — moves to `ColorStudio.tsx`; remove the "Or pick any color" free-input row entirely)
+- Modify: `src/components/ColorStudio.tsx` (add a new full-width section below the main two-column grid for `CatalogueBrowser`; replace the border feature's free color input with a swatch-based picker reusing `PaletteBrowser`)
+- Modify: `src/dictionaries/types.ts`, `en.ts`, `ne.ts` (remove the now-unused `pickAnyColorLabel` key — grep-verify first that nothing else references it)
 
-**Interfaces:** unchanged — `CatalogueBrowser`'s `onSelect`/`disabled` props are reused exactly as Task 29 already wired them, just relocated to a wider container.
+**Interfaces:** `PaletteBrowser`'s own props (`onSelect`, `disabled`, `locale`) are unchanged — it's reused as-is for the border picker, just with a different `onSelect` callback (`handleBorderColorSelect` instead of `handleColorSelect`).
 
-- [ ] **Step 1: Remove the catalog section from `PaletteBrowser.tsx`**
+- [ ] **Step 1: Remove the catalog section AND the free picker from `PaletteBrowser.tsx`**
 
-Delete the `import { CatalogueBrowser } from "./CatalogueBrowser";` line and the trailing block:
+Delete the `import { CatalogueBrowser } from "./CatalogueBrowser";` line and this trailing block (moves to `ColorStudio.tsx` in Step 2):
 
 ```tsx
 <div className="mt-6 border-t border-hairline-strong/60 pt-4">
@@ -2748,11 +2752,29 @@ Delete the `import { CatalogueBrowser } from "./CatalogueBrowser";` line and the
 </div>
 ```
 
-`PaletteBrowser.tsx` goes back to ending at the `paletteCaveat` paragraph, exactly as it was after Task 23.
+Also delete the free-color-picker block entirely (not moved anywhere — just removed):
 
-- [ ] **Step 2: Add the catalog section to `ColorStudio.tsx`, full-width, below the main grid**
+```tsx
+<label className="flex items-center gap-3 border-t border-hairline-strong/60 pt-4 text-sm text-graphite/70">
+  <span>{dict.studio.pickAnyColorLabel}</span>
+  <input
+    type="color"
+    disabled={disabled}
+    onChange={(event) => onSelect(hexToRgb(event.target.value))}
+    className="h-8 w-12 align-middle"
+  />
+</label>
+```
 
-Import `CatalogueBrowser`. The component currently `return`s the two-column grid `<div>` directly as its root — wrap it in a fragment (or an outer `<div className="space-y-8">`) and add the new section as a sibling AFTER the grid, not inside the `<aside>`:
+`PaletteBrowser.tsx` now ends at the `paletteCaveat` paragraph — curated swatches, then the caveat, nothing else.
+
+- [ ] **Step 2: Remove `pickAnyColorLabel` from the dictionary**
+
+Run `grep -rn "pickAnyColorLabel" src/` first to confirm `PaletteBrowser.tsx` (just edited) is the only consumer. If it is, remove the key from `src/dictionaries/types.ts` (the `studio` block), `src/dictionaries/en.ts`, and `src/dictionaries/ne.ts`. `npx tsc --noEmit` will fail loudly if any reference is missed, since `Dictionary` requires exact key parity across `en.ts`/`ne.ts`.
+
+- [ ] **Step 3: Add the full-catalog section to `ColorStudio.tsx`, full-width, below the main grid**
+
+Import `CatalogueBrowser`. The component currently `return`s the two-column grid `<div>` directly as its root — wrap it in an outer `<div className="space-y-8">` and add the new section as a sibling AFTER the grid, not inside the `<aside>`:
 
 ```tsx
 return (
@@ -2770,22 +2792,69 @@ return (
 );
 ```
 
-Keep every existing prop/handler on the photo column and `<aside>` exactly as they are — this task only adds the new sibling section and moves where `CatalogueBrowser` is rendered, nothing else.
+- [ ] **Step 4: Replace the border feature's free color input with a swatch picker**
 
-- [ ] **Step 3: Manual verification**
+The current border section (inside the `<aside>`) defaults a newly-checked border to white and then reveals a free `<input type="color">` to change it — both need to go. Replace it with a picker that opens (with nothing applied yet) when the checkbox is checked, and only actually sets a border once the user picks a swatch:
 
-With the dev server running (do NOT run `npm run build` while it's up), upload a photo, scroll below the photo/sidebar area, confirm the full catalog browser now renders full-width with legible, uncropped color names in its grid. Confirm the sidebar's curated Berger swatches and free picker still work exactly as before (unaffected by the move). Confirm clicking a full-catalog swatch still recolors the active region correctly.
+Add local state near `zoom`:
 
-- [ ] **Step 4: Verify no regressions**
+```tsx
+const [borderPickerOpen, setBorderPickerOpen] = useState(false);
+```
 
-Run: `npx tsc --noEmit`
-Run: `npm test` — must stay at 37/37, unchanged (this is a JSX-relocation only, no logic change).
+Add an effect that keeps the checkbox in sync with whichever region is active (so switching regions shows that region's real border state, not a stale toggle):
 
-- [ ] **Step 5: Commit**
+```tsx
+useEffect(() => {
+  const activeRegion = regions.find((r) => r.id === activeRegionId);
+  setBorderPickerOpen(Boolean(activeRegion?.borderColor));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [activeRegionId]);
+```
+
+Replace the existing border JSX block:
+
+```tsx
+{activeRegionId && (
+  <div className="mt-4 space-y-2 border-t border-hairline-strong/60 pt-4">
+    <label className="flex items-center gap-3 text-sm text-graphite/70">
+      <input
+        type="checkbox"
+        checked={borderPickerOpen}
+        onChange={(event) => {
+          setBorderPickerOpen(event.target.checked);
+          if (!event.target.checked) handleBorderColorSelect(null);
+        }}
+      />
+      <span>{dict.studio.borderCheckboxLabel}</span>
+    </label>
+    {borderPickerOpen && (
+      <PaletteBrowser onSelect={handleBorderColorSelect} locale={locale} />
+    )}
+  </div>
+)}
+```
+
+Note this drops the old default-to-white behavior entirely — checking the box now only reveals the swatch picker; no border is actually applied until a swatch is clicked. Unchecking both closes the picker and clears any border already set (`handleBorderColorSelect(null)`), matching the checkbox's existing "off" behavior.
+
+- [ ] **Step 5: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Upload a photo, select a region, confirm there is no "Or pick any color" input anywhere in the sidebar.
+- Scroll below the photo/sidebar area, confirm the full catalog browser renders full-width with legible, uncropped color names, and that clicking a swatch there recolors the active region.
+- Check "Add a border," confirm a swatch picker (not a free color input) appears, confirm nothing changes on the photo until a swatch is clicked, confirm clicking a swatch applies that border color, and confirm unchecking removes the border.
+- Switch to a different region and back, confirm the border checkbox/picker state correctly reflects each region's own border status.
+
+- [ ] **Step 6: Verify no regressions**
+
+Run: `npx tsc --noEmit` — must be clean, including proof that `ne.ts` still satisfies `Dictionary` after removing `pickAnyColorLabel`.
+Run: `npm test` — must stay at 37/37 (this task touches only UI wiring, not tested logic).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/components/PaletteBrowser.tsx src/components/ColorStudio.tsx
-git commit -m "fix: move full catalog browser out of the cramped sidebar, full-width below the photo"
+git add src/components/PaletteBrowser.tsx src/components/ColorStudio.tsx src/dictionaries/types.ts src/dictionaries/en.ts src/dictionaries/ne.ts
+git commit -m "fix: move full catalog below photo, remove free color pickers"
 ```
 
 ---
