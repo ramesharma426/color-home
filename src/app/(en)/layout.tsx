@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
-import "./globals.css";
+import "../globals.css";
+import { getDictionary } from "@/lib/dictionary";
+
+const dict = getDictionary("en");
 
 export const metadata: Metadata = {
-  title: "Color Home",
-  description: "Preview paint colors on your own home before you buy.",
+  title: dict.meta.title,
+  description: dict.meta.description,
 };
 
 const FONT_HREF =
@@ -15,7 +18,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang={dict.meta.htmlLang}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
