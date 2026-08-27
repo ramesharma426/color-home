@@ -4613,6 +4613,124 @@ git commit -m "feat: add Eraser tool that subtracts from a region's mask"
 
 ---
 
+## Plan expansion (2026-08-27): visualize Brush/Eraser size, per owner request
+
+**Added per explicit owner feedback:** "the size of eraser is not fine, if we increase eraser size then there is no way to know the size of eraser, visualize the size." There's currently no visual feedback for the Brush/Eraser radius beyond the numeric slider value — the user has to guess how big a stroke will actually be before making it. The fix: draw a circle outline that follows the cursor, sized to the active tool's current radius, on the same overlay canvas the marching-ants/rubber-band-preview already use.
+
+### Task 41: Cursor-following size indicator for Brush and Eraser
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally — purely a visual addition to the existing overlay-canvas render loop.
+
+- [ ] **Step 1: Track the cursor position in buffer coordinates**
+
+Near the other tool state (`brushSize`/`eraserSize`), add:
+
+```tsx
+const [cursorPos, setCursorPos] = useState<Point | null>(null);
+```
+
+Add a new handler near `canvasPointFromEvent`:
+
+```tsx
+function handleToolCursorMove(event: React.PointerEvent<HTMLCanvasElement>) {
+  setCursorPos(canvasPointFromEvent(event));
+}
+```
+
+- [ ] **Step 2: Wire it into the canvas's pointer events**
+
+Add `handleToolCursorMove(event)` as a fourth call inside the canvas's existing composed `onPointerMove`:
+
+```tsx
+onPointerMove={(event) => {
+  handleLassoPointerMove(event);
+  handleBrushPointerMove(event);
+  handleEraserPointerMove(event);
+  handleToolCursorMove(event);
+}}
+```
+
+Add a new `onPointerLeave` prop directly on the `<canvas>` element (not the wrapper — the wrapper already has its own `onPointerLeave` for panning) to hide the indicator when the cursor leaves the paintable area:
+
+```tsx
+onPointerLeave={() => setCursorPos(null)}
+```
+
+- [ ] **Step 3: Draw the size circle in the existing unified overlay effect**
+
+This overlay canvas already has exactly one render authority (the effect that draws the marching-ants outline and the Polygonal Lasso rubber-band preview, keyed on `[regions, activeRegionId, polygonPreview, activeTool]` — see that effect's own comment explaining why it was unified this way, from a prior fix). Extend it rather than adding a competing effect, to avoid reintroducing the exact clobbering bug that fix eliminated.
+
+Add `cursorPos`, `brushSize`, and `eraserSize` to the effect's dependency array: `[regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize]`.
+
+Inside the effect, compute whether the size cursor should show, and include it in the "should the loop even run" decision. Change:
+
+```tsx
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+
+    if (!activeRegion && !showPreview) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      return;
+    }
+```
+
+to:
+
+```tsx
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+    const showSizeCursor = (activeTool === "brush" || activeTool === "eraser") && cursorPos !== null;
+
+    if (!activeRegion && !showPreview && !showSizeCursor) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      return;
+    }
+```
+
+(This matters: without adding `showSizeCursor` to that early-return check, the size circle would never appear before the user has an active region or a polygon in progress — e.g. hovering with Brush selected but nothing painted yet.)
+
+Inside `drawFrame`, after the existing `if (showPreview) { ... }` block, add:
+
+```tsx
+        if (showSizeCursor && cursorPos) {
+          const radius = activeTool === "brush" ? brushSize : eraserSize;
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#3b5578"; // skylight — the app's UI-accent blue, distinct from
+          ctx!.lineWidth = 1; // both the black selection outline and any paint color
+          ctx!.beginPath();
+          ctx!.arc(cursorPos.x, cursorPos.y, radius, 0, Math.PI * 2);
+          ctx!.stroke();
+        }
+```
+
+- [ ] **Step 4: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Brush, move the mouse over the photo without clicking — confirm a circle outline follows the cursor, sized to the current brush-size slider value.
+- Drag the brush-size slider while hovering — confirm the circle's radius updates live.
+- Confirm the circle still follows the cursor while actively dragging a stroke, not just before starting one.
+- Move the cursor off the photo entirely — confirm the circle disappears.
+- Switch to Eraser — confirm the same behavior with the eraser-size slider.
+- Switch to Magic Wand, Lasso, Polygonal Lasso, or Hand — confirm no size circle appears (it's Brush/Eraser-only), and confirm the marching-ants outline and Polygonal Lasso rubber-band preview both still render correctly, unaffected by this addition.
+- Confirm this works even before any region has been created (hovering with Brush active, no active region yet) — this is the case the early-return change specifically targets.
+
+- [ ] **Step 5: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 46/46 (unchanged; this is a purely visual addition to already-hand-traced-and-tested interaction code, no new unit-testable pure logic).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: show a cursor-following size circle for the Brush and Eraser tools"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
