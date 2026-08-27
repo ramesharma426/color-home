@@ -15,7 +15,7 @@ Owner: Ramesh Sharma. Hosted at `color.buildingcare.com.np` (see `CNAME`).
 - **Never run `npm run build` while the dev server is running.** They both write to `.next/` in incompatible formats and corrupt each other — this has happened repeatedly. Always `kill` the dev server, `rm -rf .next`, build, then restart the dev server (`nohup npm run dev > /tmp/color-home-dev.log 2>&1 < /dev/null & disown`).
 - **Do not use Playwright** for testing/verification in this project (explicit owner instruction). Verification is `npx tsc --noEmit` + `npm test` (Vitest) + `curl` against the dev server. Task 24 (a Playwright e2e test) was skipped for this reason.
 - **Do not add Claude/Anthropic attribution anywhere** — not in commit messages (no `Co-Authored-By: Claude...` trailer), not in code comments, not in docs. Plain commit messages only.
-- **Per-task commits are expected and fine** — the owner only asked to not push, and not to make ad-hoc commits outside the task-review flow without asking first. Never `git push`; the owner pushes themselves.
+- **Per-task commits are expected and fine.** Pushing is now explicitly allowed too — the owner said (2026-08-27) "you are free to commit and push the changes," superseding the earlier never-push rule. Still avoid ad-hoc commits outside the task-review flow without asking first, and prefer pushing complete, reviewed batches over mid-fix-loop states.
 - Before any command that could discard uncommitted work, `git status` first — the owner sometimes commits/pushes independently (via IDE or terminal) in parallel with an agent session, so don't assume the working tree only reflects what you did.
 
 ## Architecture notes worth knowing before touching code
