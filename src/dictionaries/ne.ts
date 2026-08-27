@@ -74,6 +74,8 @@ export const ne: Dictionary = {
     regionsEmptyState: "रङ्ग्याउन भित्ता, ट्रिम, वा छाना छान्न फोटोमा कुनै ठाउँमा क्लिक गर्नुहोस्।",
     regionNoColorLabel: "अझै रङ छैन",
     regionLabelPrefix: "क्षेत्र",
+    regionDeleteLabel: "मेटाउनुहोस्",
+    regionRenameLabel: "नाम बदल्नुहोस्",
     borderCheckboxLabel: "किनारा थप्नुहोस्",
     categoryFacade: "फेसाड",
     categoryTrim: "ट्रिम",

@@ -75,6 +75,8 @@ export const en: Dictionary = {
     regionsEmptyState: "Click a spot on the photo to select a wall, trim, or roof to recolor.",
     regionNoColorLabel: "No color yet",
     regionLabelPrefix: "Region",
+    regionDeleteLabel: "Delete",
+    regionRenameLabel: "Rename",
     borderCheckboxLabel: "Add a border",
     categoryFacade: "Facade",
     categoryTrim: "Trims",

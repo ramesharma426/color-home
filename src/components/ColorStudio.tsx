@@ -445,6 +445,15 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     setActiveRegionId(id);
   }
 
+  function handleDeleteRegion(id: string) {
+    setRegions((prev) => prev.filter((r) => r.id !== id));
+    if (activeRegionId === id) setActiveRegionId(null);
+  }
+
+  function handleRenameRegion(id: string, label: string) {
+    setRegions((prev) => prev.map((r) => (r.id === id ? { ...r, label } : r)));
+  }
+
   async function handleColorSelect(color: RGBColor) {
     const baseBuffer = baseBufferRef.current;
     if (!baseBuffer || !activeRegionId) return;
@@ -556,7 +565,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
         if (multiPolygon) {
           ctx!.setLineDash([4, 4]);
           ctx!.lineDashOffset = -dashOffset;
-          ctx!.strokeStyle = "#ff00ff"; // bright magenta — distinct from any paint
+          ctx!.strokeStyle = "#000000"; // black — distinct from any paint
           ctx!.lineWidth = 1; // color a user could realistically pick
           for (const polygon of multiPolygon.coordinates) {
             for (const ring of polygon) {
@@ -570,7 +579,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
         if (showPreview) {
           ctx!.setLineDash([]);
-          ctx!.strokeStyle = "#ff00ff";
+          ctx!.strokeStyle = "#000000";
           ctx!.lineWidth = 1;
           ctx!.beginPath();
           ctx!.moveTo(polygonPreview[0].x, polygonPreview[0].y);
@@ -697,6 +706,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
               regions={regions}
               activeRegionId={activeRegionId}
               onSelectRegion={setActiveRegionId}
+              onDeleteRegion={handleDeleteRegion}
+              onRenameRegion={handleRenameRegion}
               locale={locale}
             />
           </section>

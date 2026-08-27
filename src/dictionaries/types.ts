@@ -65,6 +65,8 @@ export interface Dictionary {
     regionsEmptyState: string;
     regionNoColorLabel: string;
     regionLabelPrefix: string;
+    regionDeleteLabel: string;
+    regionRenameLabel: string;
     borderCheckboxLabel: string;
     categoryFacade: string;
     categoryTrim: string;
