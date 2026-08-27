@@ -46,6 +46,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [isPanning, setIsPanning] = useState(false);
   const lassoPathRef = useRef<Point[]>([]);
   const [isDrawingLasso, setIsDrawingLasso] = useState(false);
+  const polygonPointsRef = useRef<Point[]>([]);
+  const [polygonPreview, setPolygonPreview] = useState<Point[]>([]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -90,6 +92,17 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
+  }, []);
+
+  // Escape discards an in-progress Polygonal Lasso without committing a region.
+  useEffect(() => {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      polygonPointsRef.current = [];
+      setPolygonPreview([]);
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
   }, []);
 
   function render() {
@@ -198,6 +211,45 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
     const newMask = polygonToMask(path, baseBuffer.width, baseBuffer.height);
     await commitToolMask(newMask, event.ctrlKey || event.metaKey);
+  }
+
+  const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
+
+  function handlePolygonClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (activeTool !== "polygonLasso" || isSpacePanningRef.current) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+
+    const points = polygonPointsRef.current;
+    if (points.length >= 3) {
+      const start = points[0];
+      const distanceToStart = Math.hypot(point.x - start.x, point.y - start.y);
+      if (distanceToStart <= POLYGON_CLOSE_RADIUS) {
+        finishPolygon(event.ctrlKey || event.metaKey);
+        return;
+      }
+    }
+
+    points.push(point);
+    setPolygonPreview([...points]);
+  }
+
+  function handlePolygonDoubleClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (activeTool !== "polygonLasso" || isSpacePanningRef.current) return;
+    event.preventDefault();
+    finishPolygon(event.ctrlKey || event.metaKey);
+  }
+
+  async function finishPolygon(shouldMerge: boolean) {
+    const points = polygonPointsRef.current;
+    polygonPointsRef.current = [];
+    setPolygonPreview([]);
+
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer || points.length < 3) return; // too few vertices — silently discard
+
+    const newMask = polygonToMask(points, baseBuffer.width, baseBuffer.height);
+    await commitToolMask(newMask, shouldMerge && Boolean(activeRegionId));
   }
 
   async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
@@ -392,6 +444,28 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     return () => cancelAnimationFrame(animationFrameId);
   }, [regions, activeRegionId]);
 
+  // Live rubber-band preview of the in-progress Polygonal Lasso path, drawn on
+  // the same overlay canvas as the marching ants above. Kept as a separate
+  // effect (different deps) so it doesn't fight that animation loop's own
+  // clearRect/draw cycle on every render.
+  useEffect(() => {
+    if (activeTool !== "polygonLasso" || polygonPreview.length === 0) return;
+    const overlay = overlayCanvasRef.current;
+    if (!overlay) return;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#ff00ff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(polygonPreview[0].x, polygonPreview[0].y);
+    for (let i = 1; i < polygonPreview.length; i++) {
+      ctx.lineTo(polygonPreview[i].x, polygonPreview[i].y);
+    }
+    ctx.stroke();
+  }, [polygonPreview, activeTool]);
+
   return (
     <div className="space-y-8">
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
@@ -438,7 +512,11 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
             >
               <canvas
                 ref={canvasRef}
-                onClick={handleCanvasClick}
+                onClick={(event) => {
+                  handleCanvasClick(event);
+                  handlePolygonClick(event);
+                }}
+                onDoubleClick={handlePolygonDoubleClick}
                 onContextMenu={handleCanvasContextMenu}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
