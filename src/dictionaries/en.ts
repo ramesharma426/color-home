@@ -83,6 +83,11 @@ export const en: Dictionary = {
     paletteCaveat:
       "Berger colors shown are visually estimated from a printed swatch card — confirm against the physical fandeck before ordering paint.",
     downloadButtonLabel: "Download result",
+    toolMagicWandLabel: "Magic Wand",
+    toolLassoLabel: "Lasso",
+    toolPolygonLassoLabel: "Polygonal Lasso",
+    toolBrushLabel: "Selection Brush",
+    toolHandLabel: "Hand (pan)",
   },
   colors: {
     eyebrow: "Color Library",

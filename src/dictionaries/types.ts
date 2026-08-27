@@ -72,6 +72,11 @@ export interface Dictionary {
     paletteDisabledMessage: string;
     paletteCaveat: string;
     downloadButtonLabel: string;
+    toolMagicWandLabel: string;
+    toolLassoLabel: string;
+    toolPolygonLassoLabel: string;
+    toolBrushLabel: string;
+    toolHandLabel: string;
   };
   colors: {
     eyebrow: string;

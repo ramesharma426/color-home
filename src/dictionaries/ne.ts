@@ -82,6 +82,11 @@ export const ne: Dictionary = {
     paletteCaveat:
       "देखाइएका Berger रङहरू छापिएको स्वाच कार्डबाट अनुमानित हुन् — पेन्ट अर्डर गर्नुअघि साँच्चैको फ्यान्डेकसँग जाँच्नुहोस्।",
     downloadButtonLabel: "नतिजा डाउनलोड गर्नुहोस्",
+    toolMagicWandLabel: "म्याजिक वान्ड",
+    toolLassoLabel: "लासो",
+    toolPolygonLassoLabel: "बहुभुज लासो",
+    toolBrushLabel: "चयन ब्रस",
+    toolHandLabel: "हात (सार्नुहोस्)",
   },
   colors: {
     eyebrow: "रङ पुस्तकालय",

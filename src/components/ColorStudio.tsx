@@ -12,6 +12,7 @@ import { CatalogueBrowser } from "./CatalogueBrowser";
 import { DownloadButton } from "./DownloadButton";
 import { getDictionary } from "@/lib/dictionary";
 import type { Locale } from "@/dictionaries/types";
+import { SelectionToolbar, type SelectionTool } from "./SelectionToolbar";
 
 export interface Region {
   id: string;
@@ -37,9 +38,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [zoom, setZoom] = useState(100); // percent, 50-200
   const [borderPickerOpen, setBorderPickerOpen] = useState(false);
   const { runFloodFill, runRecolor } = useCanvasWorker();
+  const [activeTool, setActiveTool] = useState<SelectionTool>("magicWand");
+  const isSpacePanningRef = useRef(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; dragged: boolean } | null>(null);
-  const suppressNextClickRef = useRef(false);
+  const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [isPanning, setIsPanning] = useState(false);
 
   useEffect(() => {
@@ -60,6 +62,32 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     setBorderPickerOpen(Boolean(activeRegion?.borderColor));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRegionId]);
+
+  // Spacebar acts as a temporary pan override regardless of the active tool
+  // (a common convention in image editors), so a Magic Wand user doesn't have
+  // to switch to the Hand tool just to nudge the view. Guarded against typing
+  // targets (e.g. the catalog search box) so hitting Space there doesn't hijack
+  // the page instead of typing a space character.
+  useEffect(() => {
+    function isTypingTarget(target: EventTarget | null) {
+      const tag = (target as HTMLElement | null)?.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA";
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.code === "Space" && !isTypingTarget(event.target)) {
+        isSpacePanningRef.current = true;
+      }
+    }
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.code === "Space") isSpacePanningRef.current = false;
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, []);
 
   function render() {
     const canvas = canvasRef.current;
@@ -104,6 +132,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
   function handleWrapperPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return; // left button only — don't interfere with right-click
+    if (activeTool !== "hand" && !isSpacePanningRef.current) return;
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
     panStateRef.current = {
@@ -111,44 +140,25 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
       startY: event.clientY,
       scrollLeft: wrapper.scrollLeft,
       scrollTop: wrapper.scrollTop,
-      dragged: false,
     };
+    setIsPanning(true);
   }
 
   function handleWrapperPointerMove(event: React.PointerEvent<HTMLDivElement>) {
     const pan = panStateRef.current;
     const wrapper = wrapperRef.current;
     if (!pan || !wrapper) return;
-
-    const dx = event.clientX - pan.startX;
-    const dy = event.clientY - pan.startY;
-
-    if (!pan.dragged && Math.hypot(dx, dy) > 4) {
-      pan.dragged = true;
-      setIsPanning(true);
-    }
-
-    if (pan.dragged) {
-      wrapper.scrollLeft = pan.scrollLeft - dx;
-      wrapper.scrollTop = pan.scrollTop - dy;
-    }
+    wrapper.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
+    wrapper.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
   }
 
   function handleWrapperPointerUp() {
-    if (panStateRef.current?.dragged) {
-      // A real pan happened — swallow the click that's about to fire on the
-      // canvas underneath, so panning never accidentally creates a new region.
-      suppressNextClickRef.current = true;
-    }
     panStateRef.current = null;
     setIsPanning(false);
   }
 
   async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (suppressNextClickRef.current) {
-      suppressNextClickRef.current = false;
-      return;
-    }
+    if (activeTool !== "magicWand") return;
     const canvas = canvasRef.current;
     const baseBuffer = baseBufferRef.current;
     if (!canvas || !baseBuffer) return;
@@ -340,18 +350,20 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
         <div className="self-start border border-hairline-strong/60 bg-chalk p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-1">
             <p className="label-mono text-skylight">{dict.studio.canvasStepLabel}</p>
-            <label className="label-mono flex items-center gap-3 text-graphite/70">
-              <span>{dict.studio.sensitivityLabel}</span>
-              <input
-                type="range"
-                min={5}
-                max={80}
-                value={tolerance}
-                onChange={(event) => setTolerance(Number(event.target.value))}
-                className="h-1 w-28 cursor-pointer accent-skylight align-middle"
-              />
-              <span className="w-6 tabular-nums text-graphite">{tolerance}</span>
-            </label>
+            {activeTool === "magicWand" && (
+              <label className="label-mono flex items-center gap-3 text-graphite/70">
+                <span>{dict.studio.sensitivityLabel}</span>
+                <input
+                  type="range"
+                  min={5}
+                  max={80}
+                  value={tolerance}
+                  onChange={(event) => setTolerance(Number(event.target.value))}
+                  className="h-1 w-28 cursor-pointer accent-skylight align-middle"
+                />
+                <span className="w-6 tabular-nums text-graphite">{tolerance}</span>
+              </label>
+            )}
             <label className="label-mono flex items-center gap-3 text-graphite/70">
               <span>{dict.studio.zoomLabel}</span>
               <input
@@ -366,28 +378,37 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
               <span className="w-10 tabular-nums text-graphite">{zoom}%</span>
             </label>
           </div>
-          <div
-            ref={wrapperRef}
-            className="relative overflow-auto border border-hairline"
-            onPointerDown={handleWrapperPointerDown}
-            onPointerMove={handleWrapperPointerMove}
-            onPointerUp={handleWrapperPointerUp}
-            onPointerLeave={handleWrapperPointerUp}
-          >
-            <canvas
-              ref={canvasRef}
-              onClick={handleCanvasClick}
-              onContextMenu={handleCanvasContextMenu}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={handleCanvasDrop}
-              style={{ width: `${zoom}%`, height: "auto" }}
-              className={isPanning ? "block cursor-grabbing" : "block cursor-crosshair"}
-            />
-            <canvas
-              ref={overlayCanvasRef}
-              style={{ width: `${zoom}%`, height: "auto" }}
-              className="pointer-events-none absolute left-0 top-0"
-            />
+          <div className="flex gap-3">
+            <SelectionToolbar activeTool={activeTool} onSelectTool={setActiveTool} locale={locale} />
+            <div
+              ref={wrapperRef}
+              className="relative flex-1 overflow-auto border border-hairline"
+              onPointerDown={handleWrapperPointerDown}
+              onPointerMove={handleWrapperPointerMove}
+              onPointerUp={handleWrapperPointerUp}
+              onPointerLeave={handleWrapperPointerUp}
+            >
+              <canvas
+                ref={canvasRef}
+                onClick={handleCanvasClick}
+                onContextMenu={handleCanvasContextMenu}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={handleCanvasDrop}
+                style={{ width: `${zoom}%`, height: "auto" }}
+                className={
+                  isPanning
+                    ? "block cursor-grabbing"
+                    : activeTool === "hand"
+                    ? "block cursor-grab"
+                    : "block cursor-crosshair"
+                }
+              />
+              <canvas
+                ref={overlayCanvasRef}
+                style={{ width: `${zoom}%`, height: "auto" }}
+                className="pointer-events-none absolute left-0 top-0"
+              />
+            </div>
           </div>
         </div>
         <aside className="space-y-8">
