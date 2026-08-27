@@ -13,6 +13,7 @@ import { DownloadButton } from "./DownloadButton";
 import { getDictionary } from "@/lib/dictionary";
 import type { Locale } from "@/dictionaries/types";
 import { SelectionToolbar, type SelectionTool } from "./SelectionToolbar";
+import { polygonToMask, type Point } from "@/lib/canvas/polygonMask";
 
 export interface Region {
   id: string;
@@ -43,6 +44,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panStateRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [isPanning, setIsPanning] = useState(false);
+  const lassoPathRef = useRef<Point[]>([]);
+  const [isDrawingLasso, setIsDrawingLasso] = useState(false);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -157,6 +160,46 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     setIsPanning(false);
   }
 
+  function canvasPointFromEvent(event: { clientX: number; clientY: number }): Point | null {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: Math.round((event.clientX - rect.left) * scaleX),
+      y: Math.round((event.clientY - rect.top) * scaleY),
+    };
+  }
+
+  function handleLassoPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "lasso" || event.button !== 0) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+    lassoPathRef.current = [point];
+    setIsDrawingLasso(true);
+  }
+
+  function handleLassoPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "lasso" || lassoPathRef.current.length === 0) return;
+    const point = canvasPointFromEvent(event);
+    if (!point) return;
+    lassoPathRef.current.push(point);
+  }
+
+  async function handleLassoPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (activeTool !== "lasso" || lassoPathRef.current.length === 0) return;
+    const path = lassoPathRef.current;
+    lassoPathRef.current = [];
+    setIsDrawingLasso(false);
+
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer || path.length < 3) return; // too short a drag — silently discard
+
+    const newMask = polygonToMask(path, baseBuffer.width, baseBuffer.height);
+    await commitToolMask(newMask, event.ctrlKey || event.metaKey);
+  }
+
   async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
     if (activeTool !== "magicWand") return;
     const canvas = canvasRef.current;
@@ -170,9 +213,14 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     const y = Math.round((event.clientY - rect.top) * scaleY);
 
     const newMask = await runFloodFill(baseBuffer, x, y, tolerance);
-    const isMerge = (event.ctrlKey || event.metaKey) && activeRegionId;
+    await commitToolMask(newMask, (event.ctrlKey || event.metaKey) && Boolean(activeRegionId));
+  }
 
-    if (isMerge) {
+  async function commitToolMask(newMask: Uint8Array, shouldMerge: boolean) {
+    const baseBuffer = baseBufferRef.current;
+    if (!baseBuffer) return;
+
+    if (shouldMerge) {
       const activeRegion = regions.find((r) => r.id === activeRegionId);
       if (!activeRegion) return;
 
@@ -394,6 +442,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 onContextMenu={handleCanvasContextMenu}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
+                onPointerDown={handleLassoPointerDown}
+                onPointerMove={handleLassoPointerMove}
+                onPointerUp={handleLassoPointerUp}
                 style={{ width: `${zoom}%`, height: "auto" }}
                 className={
                   isPanning
