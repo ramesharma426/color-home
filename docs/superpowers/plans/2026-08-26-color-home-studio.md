@@ -2544,6 +2544,8 @@ git commit -m "test: validate Berger and Asian Paints catalogue data"
 
 import { useMemo, useState } from "react";
 import type { CatalogueColor, PaintBrand } from "@/data/palettes/types";
+import type { RGBColor } from "@/lib/canvas/types";
+import { hexToRgb } from "@/lib/canvas/colorMath";
 import { bergerCatalogue, bergerCategories } from "@/data/palettes/berger-catalogue";
 import { asianPaintsCatalogue, asianPaintsCategories } from "@/data/palettes/asian-paints-catalogue";
 
@@ -2552,7 +2554,18 @@ const BRANDS: { id: PaintBrand; label: string; colors: CatalogueColor[]; categor
   { id: "asian-paints", label: "Asian Paints", colors: asianPaintsCatalogue, categories: asianPaintsCategories },
 ];
 
-export function CatalogueBrowser() {
+/**
+ * `onSelect` is optional: when omitted (the standalone /colors page), swatches
+ * are just displayed. When provided (reused by the Studio's PaletteBrowser in
+ * a later task), clicking a swatch calls onSelect with its RGBColor instead of
+ * only displaying it — this is why the component takes an optional prop here
+ * rather than being forked into two near-identical components later.
+ */
+export function CatalogueBrowser({
+  onSelect,
+}: {
+  onSelect?: (color: RGBColor) => void;
+} = {}) {
   const [brandId, setBrandId] = useState<PaintBrand>("berger");
   const [category, setCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -2633,15 +2646,33 @@ export function CatalogueBrowser() {
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
-          {results.map((color) => (
-            <div key={`${color.name}-${color.code}`} className="overflow-hidden rounded-lg border border-hairline-strong">
-              <div className="h-16" style={{ backgroundColor: color.hex }} />
-              <div className="p-2">
-                <p className="truncate text-sm font-medium">{color.name}</p>
-                <p className="label-mono text-graphite/70">{color.code}</p>
+          {results.map((color) => {
+            const swatch = (
+              <>
+                <div className="h-16" style={{ backgroundColor: color.hex }} />
+                <div className="p-2">
+                  <p className="truncate text-sm font-medium">{color.name}</p>
+                  <p className="label-mono text-graphite/70">{color.code}</p>
+                </div>
+              </>
+            );
+            const className = "overflow-hidden rounded-lg border border-hairline-strong text-left";
+            return onSelect ? (
+              <button
+                key={`${color.name}-${color.code}`}
+                type="button"
+                title={`${color.name} — ${color.code}`}
+                onClick={() => onSelect(hexToRgb(color.hex))}
+                className={className}
+              >
+                {swatch}
+              </button>
+            ) : (
+              <div key={`${color.name}-${color.code}`} className={className}>
+                {swatch}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -2806,6 +2837,531 @@ Expected: PASS (1 test)
 ```bash
 git add playwright.config.ts tests/e2e/studio.spec.ts package.json package-lock.json
 git commit -m "test: add end-to-end coverage for the upload-to-download flow"
+```
+
+---
+
+### Task 25: Fix flood fill to bridge lighting/shadow gradients
+
+**Added per explicit owner feedback (2026-08-27), with a screenshot showing the bug:** "the paintaing is uneven, it is not picking the dark or shadow part of the wall." Root cause, confirmed by the controller: `floodFill` compares every candidate pixel against the *original seed pixel's* color (a deliberate choice made during Task 4's pre-flight review, to avoid "drift" through a gradient into an unrelated region). Real photos routinely have a single physical surface (a wall) that's much darker in shadow than in direct light — the total color difference between the lit and shadowed parts of the *same* wall can easily exceed any reasonable global tolerance, so the fill stops partway and leaves a visibly patchy, half-painted region.
+
+**The fix:** switch to *local/adaptive* tolerance — compare each candidate pixel against the color of the already-accepted neighbor proposing to add it, not against the fixed seed. This is the standard technique production tools (e.g. Photoshop's contiguous magic wand) use: it naturally tracks a smooth gradient step-by-step (each step's jump is small, even though the total start-to-end difference is large) while still stopping at a genuine hard edge (a real object boundary is a sharp jump, not a gradual one). This is an intentional, deliberate reversal of Task 4's original design choice, made because that choice turned out to actively break the tool's core use case on real photos — not a regression to apologize for.
+
+**Files:**
+- Modify: `src/lib/canvas/floodFill.ts`
+- Modify: `src/lib/canvas/floodFill.test.ts`
+
+**Interfaces:** unchanged — `floodFill(buffer, seedX, seedY, tolerance): Uint8Array` keeps its exact signature and return shape. Every consumer (`worker.ts`, `ColorStudio.tsx`) needs no changes.
+
+- [ ] **Step 1: Update the failing/changing tests first**
+
+The existing "respects the tolerance threshold" test specifically encodes the OLD seed-only behavior as correct and must be replaced (not kept alongside the new behavior — the old behavior is what's being fixed). Replace `src/lib/canvas/floodFill.test.ts` entirely with:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { floodFill } from "./floodFill";
+import type { PixelBuffer } from "./types";
+
+function makeBuffer(width: number, height: number, fill: (x: number, y: number) => [number, number, number]): PixelBuffer {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const [r, g, b] = fill(x, y);
+      const i = (y * width + x) * 4;
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+      data[i + 3] = 255;
+    }
+  }
+  return { data, width, height };
+}
+
+describe("floodFill", () => {
+  it("selects a solid 5x5 block and nothing outside it", () => {
+    const buffer = makeBuffer(10, 10, (x, y) => {
+      const inBlock = x >= 2 && x < 7 && y >= 2 && y < 7;
+      return inBlock ? [200, 30, 30] : [255, 255, 255];
+    });
+    const mask = floodFill(buffer, 4, 4, 10);
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 10; x++) {
+        const inBlock = x >= 2 && x < 7 && y >= 2 && y < 7;
+        expect(mask[y * 10 + x]).toBe(inBlock ? 1 : 0);
+      }
+    }
+  });
+
+  it("does not cross into a disconnected region of the same color", () => {
+    const buffer = makeBuffer(10, 10, (x, y) => {
+      const inFirst = x >= 1 && x < 3 && y >= 1 && y < 3;
+      const inSecond = x >= 7 && x < 9 && y >= 7 && y < 9;
+      return inFirst || inSecond ? [200, 30, 30] : [255, 255, 255];
+    });
+    const mask = floodFill(buffer, 1, 1, 10);
+    const selectedCount = mask.reduce((sum, v) => sum + v, 0);
+    expect(selectedCount).toBe(4);
+    expect(mask[7 * 10 + 7]).toBe(0);
+  });
+
+  it("bridges a smooth gradient one small step at a time, even though the total start-to-end difference exceeds tolerance", () => {
+    // A 1x20 strip stepping from gray 240 down to gray 50 in steps of 10.
+    // Per-step RGB distance ≈ 17.3 (comfortably under tolerance 20); total
+    // start-to-end distance ≈ 329 (far over tolerance 20). Local/adaptive
+    // tolerance must bridge the whole strip; seed-only tolerance would have
+    // stopped after 1-2 steps.
+    const width = 20;
+    const height = 1;
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let x = 0; x < width; x++) {
+      const value = 240 - x * 10;
+      const i = x * 4;
+      data[i] = value;
+      data[i + 1] = value;
+      data[i + 2] = value;
+      data[i + 3] = 255;
+    }
+    const buffer: PixelBuffer = { data, width, height };
+
+    const mask = floodFill(buffer, 0, 0, 20);
+    const selectedCount = mask.reduce((sum, v) => sum + v, 0);
+    expect(selectedCount).toBe(width);
+  });
+
+  it("still stops at a genuine hard edge even with local/adaptive tolerance", () => {
+    // A gentle 5-pixel gray gradient (200 down to 160, step 10) followed by
+    // an abrupt jump to unrelated bright red for the remaining 5 pixels.
+    const width = 10;
+    const height = 1;
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let x = 0; x < 5; x++) {
+      const value = 200 - x * 10;
+      const i = x * 4;
+      data[i] = value;
+      data[i + 1] = value;
+      data[i + 2] = value;
+      data[i + 3] = 255;
+    }
+    for (let x = 5; x < 10; x++) {
+      const i = x * 4;
+      data[i] = 255;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 255;
+    }
+    const buffer: PixelBuffer = { data, width, height };
+
+    const mask = floodFill(buffer, 0, 0, 20);
+    const selectedCount = mask.reduce((sum, v) => sum + v, 0);
+    expect(selectedCount).toBe(5);
+    expect(mask[4]).toBe(1);
+    expect(mask[5]).toBe(0);
+  });
+
+  it("throws a RangeError for an out-of-bounds seed", () => {
+    const buffer = makeBuffer(5, 5, () => [255, 255, 255]);
+    expect(() => floodFill(buffer, 10, 10, 10)).toThrow(RangeError);
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests, confirm the gradient/hard-edge tests fail against the CURRENT implementation**
+
+Run: `npx vitest run src/lib/canvas/floodFill.test.ts`
+Expected: the "bridges a smooth gradient" test FAILS (current seed-based code only selects the first 1-2 pixels, not all 20) — this confirms you've correctly reproduced the bug before fixing it. The other tests should still pass against the old code.
+
+- [ ] **Step 3: Rewrite `src/lib/canvas/floodFill.ts`**
+
+```ts
+import type { PixelBuffer } from "./types";
+
+export function floodFill(
+  buffer: PixelBuffer,
+  seedX: number,
+  seedY: number,
+  tolerance: number
+): Uint8Array {
+  const { data, width, height } = buffer;
+
+  if (seedX < 0 || seedX >= width || seedY < 0 || seedY >= height) {
+    throw new RangeError(
+      `Seed point (${seedX}, ${seedY}) is outside the ${width}x${height} buffer`
+    );
+  }
+
+  const mask = new Uint8Array(width * height);
+  const visited = new Uint8Array(width * height);
+  const toleranceSquared = tolerance * tolerance;
+
+  const pixelAt = (index: number) => {
+    const offset = index * 4;
+    return { r: data[offset], g: data[offset + 1], b: data[offset + 2] };
+  };
+
+  const withinTolerance = (a: { r: number; g: number; b: number }, index: number) => {
+    const b = pixelAt(index);
+    const dr = a.r - b.r;
+    const dg = a.g - b.g;
+    const db = a.b - b.b;
+    return dr * dr + dg * dg + db * db <= toleranceSquared;
+  };
+
+  const seedIndex = seedY * width + seedX;
+  mask[seedIndex] = 1;
+  visited[seedIndex] = 1;
+  const stack: number[] = [seedIndex];
+
+  while (stack.length > 0) {
+    const index = stack.pop()!;
+    const currentColor = pixelAt(index); // compare against THIS pixel, not the seed — this is the fix
+    const x = index % width;
+    const y = Math.floor(index / width);
+
+    const neighbors: Array<[number, number]> = [
+      [x - 1, y],
+      [x + 1, y],
+      [x, y - 1],
+      [x, y + 1],
+    ];
+
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const neighborIndex = ny * width + nx;
+      if (visited[neighborIndex]) continue;
+      visited[neighborIndex] = 1;
+
+      if (withinTolerance(currentColor, neighborIndex)) {
+        mask[neighborIndex] = 1;
+        stack.push(neighborIndex);
+      }
+    }
+  }
+
+  return mask;
+}
+```
+
+The only structural change from the previous implementation: `currentColor` is computed fresh from `pixelAt(index)` on each iteration (the pixel being expanded FROM) instead of using a single `seedColor` captured once outside the loop.
+
+- [ ] **Step 4: Run tests, confirm all pass**
+
+Run: `npx vitest run src/lib/canvas/floodFill.test.ts`
+Expected: PASS (6 tests)
+
+- [ ] **Step 5: Run the full suite to confirm no other regressions**
+
+Run: `npm test` — all other test files are untouched by this change and should be unaffected.
+
+- [ ] **Step 6: Manual sanity check on the default tolerance**
+
+With the dev server running, upload a photo with a real lighting gradient on one surface (a render or photo with visible soft shadow, not a flat studio product shot), click the lit part with the default sensitivity (24), and confirm the shadowed part of the *same* surface now gets included — while a genuinely different object (a window, the sky, a different-colored trim) does not get swept in. If the default tolerance now feels too permissive (selects clearly unrelated areas) or still not permissive enough (still stops short on typical photos), note your finding in the report — do not silently change `DEFAULT_TOLERANCE` in `ColorStudio.tsx` without saying so, since that's a product-feel decision, not just a bug fix.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/lib/canvas/floodFill.ts src/lib/canvas/floodFill.test.ts
+git commit -m "fix: use local/adaptive tolerance so flood fill bridges lighting gradients"
+```
+
+---
+
+### Task 26: Canvas zoom and a larger photo display area
+
+**Added per explicit owner feedback (2026-08-27):** "add photo zoom feature, make the image window more bigger."
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally — `<ColorStudio photo={...} locale={...} />` keeps its exact props. Zoom is internal UI state.
+
+**Why this needs no changes to click/drop coordinate math:** `handleCanvasClick`/`handleCanvasDrop` already derive `scaleX`/`scaleY` from `canvas.getBoundingClientRect()` at click time — the ACTUAL rendered CSS size of the canvas, whatever it is. Changing the canvas's displayed CSS width (via a zoom control) doesn't require touching that math at all; it already adapts.
+
+- [ ] **Step 1: Add zoom state and a control, matching the existing Sensitivity slider's pattern**
+
+Near the `tolerance` state, add:
+
+```tsx
+const [zoom, setZoom] = useState(100); // percent, 50-200
+```
+
+Render a control next to the existing Sensitivity slider (same row or directly below it, matching Task 15's established spacing/typography for that control — read the current file's Sensitivity markup and mirror its exact classNames):
+
+```tsx
+<label className="mb-2 block text-sm text-graphite/70">
+  Zoom: {zoom}%
+  <input
+    type="range"
+    min={50}
+    max={200}
+    step={10}
+    value={zoom}
+    onChange={(event) => setZoom(Number(event.target.value))}
+    className="ml-3 align-middle"
+  />
+</label>
+```
+
+- [ ] **Step 2: Apply zoom to the canvas's displayed size, with scrolling when zoomed in**
+
+Wrap the `<canvas>` in a container that scrolls when the zoomed canvas exceeds it, and set the canvas's CSS width explicitly based on `zoom`:
+
+```tsx
+<div className="overflow-auto rounded-xl border border-hairline-strong">
+  <canvas
+    ref={canvasRef}
+    onClick={handleCanvasClick}
+    onDragOver={(event) => event.preventDefault()}
+    onDrop={handleCanvasDrop}
+    style={{ width: `${zoom}%`, height: "auto" }}
+    className="cursor-crosshair"
+  />
+</div>
+```
+
+(Merge this with whatever `className`/wrapper structure Task 15 actually left around the canvas — read the current file first; the key requirement is `style={{ width: \`${zoom}%\` }}` on the canvas itself and `overflow-auto` on its immediate scrollable ancestor, not the exact surrounding markup.)
+
+- [ ] **Step 3: Give the photo panel more room by default**
+
+In `src/app/studio/page.tsx` and/or `ColorStudio.tsx`'s grid split, widen the photo column relative to the sidebar — e.g. if the current layout is a fixed two-column grid giving the sidebar a large fixed share, shift the ratio so the photo gets more of the available width (concretely: if currently `lg:grid-cols-3` with the photo at `lg:col-span-2`, consider `lg:grid-cols-5` with the photo at `lg:col-span-3` and sidebar at `lg:col-span-2`, or widen the page's overall `max-w-*` container). Read the current file to see the exact existing grid classes before changing them, and keep the sidebar legible (not so narrow that swatches/labels wrap awkwardly) — this is a judgment call, use Task 15's established spacing scale rather than arbitrary values.
+
+- [ ] **Step 4: Manual verification**
+
+With the dev server running, upload a photo, move the zoom slider to 150-200%, confirm the canvas visibly grows and the panel scrolls rather than breaking the page layout; click a surface while zoomed in and confirm the flood fill still selects the correct spot (proving the coordinate math still works at non-100% zoom); return zoom to 100% and confirm everything looks as before.
+
+- [ ] **Step 5: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — must stay at the same pass count as before this task (unaffected by this UI-only change).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx src/app/studio/page.tsx
+git commit -m "feat: add canvas zoom and a larger photo display area"
+```
+
+---
+
+### Task 27: Visible outline for the currently selected region
+
+**Added per explicit owner feedback (2026-08-27):** "when we click show the selected region" — the user wants a clear visual indicator of exactly which pixels belong to the active region on the canvas itself, not just the sidebar list highlighting the active row (which doesn't show WHERE on the photo that region actually is, especially before a color is picked).
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally. Internally reuses `computeBorderMask` (Task 17) — already imported in this file for the border-color feature.
+
+**Design: a separate overlay canvas, not a change to the main compositing canvas.** The highlight must be visible on-screen but must NOT appear in the downloaded result — `DownloadButton` reads directly from `canvasRef` (the main canvas), so as long as the highlight is drawn on a *different* canvas element stacked on top via CSS, `DownloadButton` is automatically unaffected with no changes needed to it.
+
+- [ ] **Step 1: Add a second canvas ref and stack it over the main canvas**
+
+```tsx
+const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+```
+
+Wrap both canvases in a `relative` positioned container, with the overlay `absolute` and non-interactive (so clicks/drops still land on the real canvas underneath):
+
+```tsx
+<div className="relative overflow-auto rounded-xl border border-hairline-strong">
+  <canvas
+    ref={canvasRef}
+    onClick={handleCanvasClick}
+    onDragOver={(event) => event.preventDefault()}
+    onDrop={handleCanvasDrop}
+    style={{ width: `${zoom}%`, height: "auto" }}
+    className="cursor-crosshair"
+  />
+  <canvas
+    ref={overlayCanvasRef}
+    style={{ width: `${zoom}%`, height: "auto" }}
+    className="pointer-events-none absolute left-0 top-0"
+  />
+</div>
+```
+
+- [ ] **Step 2: Size and draw the overlay whenever the active region changes**
+
+```tsx
+useEffect(() => {
+  const overlay = overlayCanvasRef.current;
+  const baseBuffer = baseBufferRef.current;
+  if (!overlay || !baseBuffer) return;
+
+  overlay.width = baseBuffer.width;
+  overlay.height = baseBuffer.height;
+  const ctx = overlay.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  const activeRegion = regions.find((r) => r.id === activeRegionId);
+  if (!activeRegion) return;
+
+  const ring = computeBorderMask(activeRegion.mask, baseBuffer.width, baseBuffer.height, 2);
+  const imageData = ctx.createImageData(overlay.width, overlay.height);
+  for (let i = 0; i < ring.length; i++) {
+    if (!ring[i]) continue;
+    const offset = i * 4;
+    imageData.data[offset] = 255;     // bright magenta highlight — distinct from any
+    imageData.data[offset + 1] = 0;   // paint color a user could realistically pick,
+    imageData.data[offset + 2] = 255; // so it always reads as "this is UI, not paint"
+    imageData.data[offset + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0);
+}, [regions, activeRegionId]);
+```
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running, upload a photo, click a surface (before picking any color) and confirm a bright magenta outline appears around exactly that region's boundary; click a different region in the sidebar list and confirm the outline moves to match; download the result and confirm the magenta outline is NOT present in the downloaded PNG (only the main canvas's content, with real paint colors, should be in the download).
+
+- [ ] **Step 4: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — unaffected, same pass count as before.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: show a visible outline around the currently selected region"
+```
+
+---
+
+### Task 28: Ctrl+click merges into the active region; right-click starts a new one
+
+**Added per explicit owner feedback (2026-08-27):** "in photoshop we have a tool where we can right click and select region... upon ctrl+left click multiple regions can be selected at once." Clarified via follow-up: right-click should behave exactly like a normal left-click (always starts a brand-new region), while Ctrl+left-click merges the new flood-fill into the currently active region instead of creating a separate one — letting one logical region span several disconnected patches (e.g. all the window trim pieces around a facade, painted as one).
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally.
+
+- [ ] **Step 1: Modify `handleCanvasClick` to support Ctrl/Cmd+click merging**
+
+```tsx
+async function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  const canvas = canvasRef.current;
+  const baseBuffer = baseBufferRef.current;
+  if (!canvas || !baseBuffer) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = Math.round((event.clientX - rect.left) * scaleX);
+  const y = Math.round((event.clientY - rect.top) * scaleY);
+
+  const newMask = await runFloodFill(baseBuffer, x, y, tolerance);
+  const isMerge = (event.ctrlKey || event.metaKey) && activeRegionId;
+
+  if (isMerge) {
+    const activeRegion = regions.find((r) => r.id === activeRegionId);
+    if (!activeRegion) return;
+
+    const mergedMask = new Uint8Array(activeRegion.mask.length);
+    for (let i = 0; i < mergedMask.length; i++) {
+      mergedMask[i] = activeRegion.mask[i] || newMask[i] ? 1 : 0;
+    }
+
+    let recoloredData = activeRegion.recoloredData;
+    if (activeRegion.color) {
+      const recoloredBuffer = await runRecolor(baseBuffer, mergedMask, activeRegion.color);
+      recoloredData = recoloredBuffer.data;
+    }
+
+    setRegions((prev) =>
+      prev.map((r) => (r.id === activeRegionId ? { ...r, mask: mergedMask, recoloredData } : r))
+    );
+    return;
+  }
+
+  const id = crypto.randomUUID();
+  setRegions((prev) => [...prev, { id, mask: newMask, color: null, label: `Region ${prev.length + 1}` }]);
+  setActiveRegionId(id);
+}
+```
+
+Note: `mergedMask[i] || newMask[i] ? 1 : 0` is a plain-JS OR over two `0`/`1` typed-array values — this reads correctly since both are `0` or `1`, not because of any special typed-array behavior.
+
+- [ ] **Step 2: Add a right-click handler that behaves exactly like a normal left-click**
+
+```tsx
+async function handleCanvasContextMenu(event: React.MouseEvent<HTMLCanvasElement>) {
+  event.preventDefault(); // suppress the browser's context menu
+  await handleCanvasClick(event); // identical behavior to a plain left-click — always a new region
+}
+```
+
+Wire it onto the canvas:
+
+```tsx
+onContextMenu={handleCanvasContextMenu}
+```
+
+Since `handleCanvasClick` checks `event.ctrlKey || event.metaKey` for merge behavior, and a right-click's `MouseEvent` also carries those modifier flags correctly, calling `handleCanvasClick(event)` from the context-menu handler reuses the exact same logic — including the (unlikely but consistent) case of Ctrl+right-click also merging. This matches the brief's simplest-option requirement: right-click's only distinguishing behavior is not needing the left mouse button, not a different selection rule.
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running, upload a photo with a surface split into several disconnected patches by trim/windows (or use two clearly separate flat areas). Click one patch (creates Region 1), Ctrl+click a second disconnected patch (should merge into Region 1's mask, NOT create Region 2), then pick a color and confirm both patches recolor together as one region. Separately, right-click an untouched area and confirm it creates a brand-new region exactly like a plain left-click would, with no browser context menu appearing.
+
+- [ ] **Step 4: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — same pass count as before this task.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "feat: ctrl+click merges into the active region, right-click starts a new one"
+```
+
+---
+
+### Task 29: Full searchable brand catalogs in the Studio's color picker
+
+**Added per explicit owner feedback (2026-08-27):** "where is color search here, i want all the colors here not only in colors section" — the searchable Berger/Asian Paints catalogs (Task 23) were originally scoped to the standalone `/colors` page only; the owner wants the same full catalog available directly in the Studio tool's color picker, not just as a separate browsing page.
+
+**Files:**
+- Modify: `src/components/PaletteBrowser.tsx`
+
+**Interfaces:**
+- Consumes: `CatalogueBrowser` (Task 23 — must be dispatched/completed before this task, since this task extends rather than duplicates it) with its `onSelect` prop.
+
+**This task does not touch the existing curated Berger facade/trim/roof swatches** (`bergerYellowsOranges`, already reviewed and working) — it adds the full-catalog search alongside them, as an additional section, rather than replacing the quick-pick swatches.
+
+- [ ] **Step 1: Add a "Browse full catalog" section to `PaletteBrowser.tsx`**
+
+Add the import and render `CatalogueBrowser` with `onSelect` wired straight to the same `onSelect` prop `PaletteBrowser` already receives, placed after the existing Berger swatches/caveat and before (or after) the free-color-picker row — read the current file first and place it wherever reads most naturally, respecting Task 15's spacing/typography conventions (a labeled divider like the existing "Or pick any color" row is a reasonable model to follow):
+
+```tsx
+import { CatalogueBrowser } from "./CatalogueBrowser";
+
+// ... inside PaletteBrowser's JSX, after the existing curated swatches/caveat:
+<div className="mt-6 border-t border-hairline-strong/60 pt-4">
+  <p className="mb-3 text-sm font-semibold text-graphite/70">Browse the full catalog</p>
+  <CatalogueBrowser onSelect={onSelect} />
+</div>
+```
+
+- [ ] **Step 2: Respect the existing `disabled` prop**
+
+`PaletteBrowser` already receives a `disabled` prop (true when no region is active). `CatalogueBrowser` as built in Task 23 doesn't currently accept a `disabled` prop — add one, following the same pattern used elsewhere in this file (visually dim the section, e.g. wrap it in a `<div className={disabled ? "opacity-50" : undefined}>`, and gate the `onSelect` call itself so a disabled catalog browser's swatches don't fire `onSelect` even if clicked, matching the fix already applied to the curated swatches in Task 19's fix round — do NOT use the native `disabled` HTML attribute on any draggable-in-the-future element for the same reason that fix existed, though nothing here is draggable yet, so this is just a consistency note, not a hard requirement for this task).
+
+- [ ] **Step 3: Manual verification**
+
+With the dev server running, upload a photo, click a surface to activate a region, scroll to the "Browse the full catalog" section, switch between Berger and Asian Paints, search for a color by name (e.g. "red") or code, click a result, and confirm it recolors the active region exactly like a curated swatch does.
+
+- [ ] **Step 4: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — same pass count as before this task.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/components/PaletteBrowser.tsx src/components/CatalogueBrowser.tsx
+git commit -m "feat: add full searchable brand catalogs to the Studio color picker"
 ```
 
 ---
