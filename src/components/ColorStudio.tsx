@@ -28,6 +28,10 @@ export interface Region {
 
 const DEFAULT_TOLERANCE = 24;
 const BORDER_THICKNESS = 4;
+// Below this much pointer movement (in buffer-space pixels), a Lasso
+// pointerdown/up pair is treated as a click placing a polygon vertex rather
+// than a freehand drag — mirrors Photoshop's click-to-place-vertex Lasso mode.
+const LASSO_DRAG_THRESHOLD = 6;
 
 export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Locale }) {
   const dict = getDictionary(locale);
@@ -56,6 +60,16 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   const [isPanning, setIsPanning] = useState(false);
   const lassoPathRef = useRef<Point[]>([]);
   const [isDrawingLasso, setIsDrawingLasso] = useState(false);
+  const lassoDownPointRef = useRef<Point | null>(null);
+  // True once the current Lasso gesture has moved past LASSO_DRAG_THRESHOLD —
+  // decides whether pointerup commits a freehand stroke or leaves vertex
+  // placement to the trailing native click (see handleVertexClick).
+  const lassoDraggedRef = useRef(false);
+  // Set right before a freehand drag commits, so the native `click` that
+  // fires on release doesn't also place a spurious polygon vertex. Reset at
+  // the start of every new gesture (not just on consumption) in case a drag
+  // ends outside the canvas and its trailing click never actually lands here.
+  const lassoSuppressClickRef = useRef(false);
   const polygonPointsRef = useRef<Point[]>([]);
   const [polygonPreview, setPolygonPreview] = useState<Point[]>([]);
   const brushPathRef = useRef<Point[]>([]);
@@ -129,9 +143,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     };
   }, []);
 
-  // Escape discards an in-progress Polygonal Lasso without committing a
-  // region. Backspace undoes only the most recently placed vertex, so a
-  // misplaced point doesn't force restarting the whole shape.
+  // Escape discards an in-progress Polygonal Lasso or click-placed Lasso
+  // vertex chain without committing a region. Backspace undoes only the
+  // most recently placed vertex, so a misplaced point doesn't force
+  // restarting the whole shape.
   useEffect(() => {
     function isTypingTarget(target: EventTarget | null) {
       const tag = (target as HTMLElement | null)?.tagName;
@@ -257,6 +272,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (activeTool !== "lasso" || event.button !== 0 || isSpacePanningRef.current) return;
     const point = canvasPointFromEvent(event);
     if (!point) return;
+    lassoDownPointRef.current = point;
+    lassoDraggedRef.current = false;
+    lassoSuppressClickRef.current = false;
     lassoPathRef.current = [point];
     setIsDrawingLasso(true);
     // Route all subsequent pointer events for this gesture to the canvas
@@ -278,14 +296,41 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (activeTool !== "lasso" || !isDrawing || isSpacePanningRef.current) return;
     const point = canvasPointFromEvent(event);
     if (!point) return;
+
+    const downPoint = lassoDownPointRef.current;
+    if (downPoint && !lassoDraggedRef.current) {
+      const distance = Math.hypot(point.x - downPoint.x, point.y - downPoint.y);
+      if (distance > LASSO_DRAG_THRESHOLD) {
+        lassoDraggedRef.current = true;
+        // A genuine freehand drag supersedes any vertices already placed by
+        // clicks earlier in this Lasso session — mixing click-vertices with
+        // a freehand stroke isn't supported, so drop the pending polygon
+        // rather than leave its preview line stuck on screen after the drag
+        // commits a completely different region.
+        if (polygonPointsRef.current.length > 0) {
+          polygonPointsRef.current = [];
+          setPolygonPreview([]);
+        }
+      }
+    }
     lassoPathRef.current.push(point);
   }
 
   async function handleLassoPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
     if (activeTool !== "lasso" || lassoPathRef.current.length === 0) return;
     const path = lassoPathRef.current;
+    const wasDrag = lassoDraggedRef.current;
     lassoPathRef.current = [];
+    lassoDownPointRef.current = null;
     setIsDrawingLasso(false);
+
+    if (!wasDrag) {
+      // Too little movement to count as a freehand stroke — leave vertex
+      // placement to the trailing native click (handleVertexClick), which
+      // shares Polygonal Lasso's click-to-vertex/close machinery.
+      return;
+    }
+    lassoSuppressClickRef.current = true; // this drag's release also fires a click — swallow it
 
     const baseBuffer = baseBufferRef.current;
     if (!baseBuffer || path.length < 3) return; // too short a drag — silently discard
@@ -390,8 +435,17 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   // on-screen target a consistent ~16px regardless of zoom level.
   const polygonCloseRadius = 1600 / zoom;
 
-  function handlePolygonClick(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (activeTool !== "polygonLasso" || isSpacePanningRef.current) return;
+  // Click-to-vertex placement, shared by Polygonal Lasso (always in this
+  // mode) and the plain Lasso tool (only when a gesture was a click, not a
+  // drag — see handleLassoPointerUp/lassoSuppressClickRef). A click ending a
+  // Lasso freehand drag still fires this handler afterward; that trailing
+  // call is swallowed via lassoSuppressClickRef before anything else runs.
+  function handleVertexClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (activeTool === "lasso" && lassoSuppressClickRef.current) {
+      lassoSuppressClickRef.current = false;
+      return;
+    }
+    if ((activeTool !== "polygonLasso" && activeTool !== "lasso") || isSpacePanningRef.current) return;
     const point = canvasPointFromEvent(event);
     if (!point) return;
 
@@ -409,8 +463,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     setPolygonPreview([...points]);
   }
 
-  function handlePolygonDoubleClick(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (activeTool !== "polygonLasso" || isSpacePanningRef.current) return;
+  function handleVertexDoubleClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    if ((activeTool !== "polygonLasso" && activeTool !== "lasso") || isSpacePanningRef.current) return;
     event.preventDefault();
     finishPolygon(event.ctrlKey || event.metaKey);
   }
@@ -589,9 +643,11 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   useEffect(render, [regions]);
 
   // Draw an animated dashed "marching ants" outline around the currently
-  // active region, AND (when a Polygonal Lasso is in progress) the solid
-  // rubber-band preview line, on a separate overlay canvas stacked over the
-  // main one — so the selection is visible on screen without ever being
+  // active region, AND (when a Polygonal Lasso, or a click-placed Lasso
+  // vertex chain, is in progress) the dashed rubber-band preview line —
+  // including a live segment that follows the cursor to the next click — on
+  // a separate overlay canvas stacked over the main one, so the selection is
+  // visible on screen without ever being
   // baked into the composited image that DownloadButton reads from
   // canvasRef. d3-contour (not a hand-rolled tracer) is used for the ants
   // because it correctly outlines every disconnected patch of a region — a
@@ -633,7 +689,8 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (!ctx) return;
 
     const activeRegion = regions.find((r) => r.id === activeRegionId);
-    const showPreview = activeTool === "polygonLasso" && polygonPreview.length > 0;
+    const showPreview =
+      (activeTool === "polygonLasso" || activeTool === "lasso") && polygonPreview.length > 0;
     const showSizeCursor = (activeTool === "brush" || activeTool === "eraser") && cursorPos !== null;
     const showLassoPreview = activeTool === "lasso" && isDrawingLasso;
 
@@ -672,7 +729,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
         }
 
         if (showPreview) {
-          ctx!.setLineDash([]);
+          ctx!.setLineDash([4, 4]); // dotted, like the app's other selection-outline convention
           ctx!.strokeStyle = "#000000";
           ctx!.lineWidth = 1;
           ctx!.beginPath();
@@ -680,6 +737,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
           for (let i = 1; i < polygonPreview.length; i++) {
             ctx!.lineTo(polygonPreview[i].x, polygonPreview[i].y);
           }
+          // Rubber-band segment from the last placed vertex to the live
+          // cursor — the part that actually "moves along" between clicks.
+          if (cursorPos) ctx!.lineTo(cursorPos.x, cursorPos.y);
           ctx!.stroke();
         }
 
@@ -805,9 +865,9 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 ref={canvasRef}
                 onClick={(event) => {
                   handleCanvasClick(event);
-                  handlePolygonClick(event);
+                  handleVertexClick(event);
                 }}
-                onDoubleClick={handlePolygonDoubleClick}
+                onDoubleClick={handleVertexDoubleClick}
                 onContextMenu={handleCanvasContextMenu}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
