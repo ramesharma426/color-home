@@ -4943,6 +4943,170 @@ git commit -m "feat: show a live preview line while dragging the Lasso tool"
 
 ---
 
+## Plan expansion (2026-08-27): Polygonal Lasso closing reliability + Backspace-undo, per owner report
+
+**Root cause identified:** the owner reported the Polygonal Lasso "not completing" a selection (e.g. trying to place a square's 4 corners and close it). The close-loop click target (`POLYGON_CLOSE_RADIUS = 8`, defined at `ColorStudio.tsx` near `handlePolygonClick`) is a *fixed buffer-space* radius — at 100% zoom that's a tight 8-screen-pixel target, and it shrinks further on screen as the user zooms out (a very common thing to do while placing a whole square's worth of corners), making it easy to miss the start point entirely and just keep adding vertices instead of closing. There's also no visual indicator showing where the close target even is, so a user has no way to know they're aiming at the right spot. Also requested in the same report: pressing Backspace while placing points should undo the most recently placed vertex (a standard, expected polygon-tool convention).
+
+### Task 44: Zoom-aware close radius, a visible close-target marker, and Backspace-to-undo for Polygonal Lasso
+
+**Files:**
+- Modify: `src/components/ColorStudio.tsx`
+
+**Interfaces:** unchanged externally.
+
+- [ ] **Step 1: Replace the fixed close radius with a zoom-aware one**
+
+Find (currently, just above `handlePolygonClick`):
+
+```tsx
+  const POLYGON_CLOSE_RADIUS = 8; // pixels, in buffer space — click near the start point to close
+```
+
+Replace with a value computed from the current zoom, so the ON-SCREEN hit target stays a consistent, comfortable size (~16 screen pixels) regardless of zoom level, instead of shrinking as the user zooms out:
+
+```tsx
+  // A fixed buffer-space radius would shrink on screen as the user zooms
+  // out (very likely while placing several corners of a shape), making the
+  // close target increasingly hard to hit. Scaling by zoom keeps the actual
+  // on-screen target a consistent ~16px regardless of zoom level.
+  const polygonCloseRadius = 1600 / zoom;
+```
+
+- [ ] **Step 2: Use the new radius in `handlePolygonClick`, and add `zoom` to the render effect's dependencies**
+
+Find:
+
+```tsx
+    const points = polygonPointsRef.current;
+    if (points.length >= 3) {
+      const start = points[0];
+      const distanceToStart = Math.hypot(point.x - start.x, point.y - start.y);
+      if (distanceToStart <= POLYGON_CLOSE_RADIUS) {
+```
+
+Replace `POLYGON_CLOSE_RADIUS` with `polygonCloseRadius` (only the variable name changes; the rest of `handlePolygonClick` is untouched).
+
+Find the overlay render effect's dependency array (currently ending in `isDrawingLasso`):
+
+```tsx
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize, isDrawingLasso]);
+```
+
+Add `zoom`:
+
+```tsx
+  }, [regions, activeRegionId, polygonPreview, activeTool, cursorPos, brushSize, eraserSize, isDrawingLasso, zoom]);
+```
+
+(Needed because Step 3 below draws a circle whose radius depends on `polygonCloseRadius`, which depends on `zoom` — without this, changing zoom mid-polygon wouldn't resize the drawn marker until some other dependency happened to change.)
+
+- [ ] **Step 3: Draw a visible marker at the start point, sized to the actual close target**
+
+Find the existing Polygonal Lasso rubber-band preview block inside `drawFrame`:
+
+```tsx
+        if (showPreview) {
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#000000";
+          ctx!.lineWidth = 1;
+          ctx!.beginPath();
+          ctx!.moveTo(polygonPreview[0].x, polygonPreview[0].y);
+          for (let i = 1; i < polygonPreview.length; i++) {
+            ctx!.lineTo(polygonPreview[i].x, polygonPreview[i].y);
+          }
+          ctx!.stroke();
+        }
+```
+
+Add a new block immediately after it (still inside `drawFrame`), drawing a small circle at the start point at exactly the size of the actual clickable close target, so the user can see precisely where and how big it is:
+
+```tsx
+        if (showPreview) {
+          ctx!.setLineDash([]);
+          ctx!.strokeStyle = "#3b5578"; // skylight — same helper-overlay blue as the Brush/Eraser size circle
+          ctx!.lineWidth = 1;
+          ctx!.beginPath();
+          ctx!.arc(polygonPreview[0].x, polygonPreview[0].y, polygonCloseRadius, 0, Math.PI * 2);
+          ctx!.stroke();
+        }
+```
+
+(This new block goes right after the existing `if (showPreview) { ... }` rubber-band-line block above — do not remove or modify that block, just add this one after it.)
+
+- [ ] **Step 4: Add Backspace-to-undo-last-vertex**
+
+Find the existing Escape-handling effect:
+
+```tsx
+  // Escape discards an in-progress Polygonal Lasso without committing a region.
+  useEffect(() => {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      polygonPointsRef.current = [];
+      setPolygonPreview([]);
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, []);
+```
+
+Replace with (adds a second handler for Backspace, in the same effect):
+
+```tsx
+  // Escape discards an in-progress Polygonal Lasso without committing a
+  // region. Backspace undoes only the most recently placed vertex, so a
+  // misplaced point doesn't force restarting the whole shape.
+  useEffect(() => {
+    function isTypingTarget(target: EventTarget | null) {
+      const tag = (target as HTMLElement | null)?.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA";
+    }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      polygonPointsRef.current = [];
+      setPolygonPreview([]);
+    }
+    function handleBackspace(event: KeyboardEvent) {
+      if (event.key !== "Backspace" || isTypingTarget(event.target)) return;
+      if (polygonPointsRef.current.length === 0) return;
+      event.preventDefault(); // outside a text field, Backspace can trigger browser back-navigation
+      polygonPointsRef.current = polygonPointsRef.current.slice(0, -1);
+      setPolygonPreview([...polygonPointsRef.current]);
+    }
+    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("keydown", handleBackspace);
+    return () => {
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("keydown", handleBackspace);
+    };
+  }, []);
+```
+
+- [ ] **Step 5: Manual verification**
+
+With the dev server running (do NOT run `npm run build` while it's up):
+- Select Polygonal Lasso, place 4 corners of a square, then zoom OUT (e.g. to 50%) before trying to close — confirm the close target circle drawn around the first point is still comfortably clickable at the new zoom level (the whole point of making it zoom-aware), and clicking within it closes the square correctly.
+- Confirm the close-target circle is visible as soon as a polygon is in progress, centered exactly on the first placed point.
+- Place several points, press Backspace once — confirm only the most recently placed point is removed (the preview line and the close-target circle, if the removed point wasn't the first one, update accordingly; if only one point remains, the close-target circle should still show around it since a lone point counts as an in-progress polygon).
+- Press Backspace repeatedly until zero points remain — confirm it's a no-op once the polygon is already empty (no crash, nothing to undo).
+- Press Escape mid-polygon — confirm it still discards the whole in-progress shape as before (unaffected by this task).
+- Confirm double-click-to-close still works as an alternative to click-near-start.
+- Confirm Magic Wand, Lasso, Brush, Eraser, and Hand/Spacebar-panning are all unaffected.
+
+- [ ] **Step 6: Verify no regressions**
+
+Run: `npx tsc --noEmit`
+Run: `npm test` — expected 46/46 (unchanged; this task is UI/interaction polish, no new unit-testable pure logic).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/components/ColorStudio.tsx
+git commit -m "fix: make Polygonal Lasso closing reliable at any zoom, show close target, add Backspace-undo"
+```
+
+---
+
 ### Task 24: End-to-end test with Playwright — SKIPPED
 
 **Skipped per explicit owner decision (2026-08-27):** the owner asked not to use Playwright for testing in this project. This task is left in the plan for historical record only and will not be implemented. Verification for this project relies on the Vitest unit suite (37 tests as of Task 28) plus manual/curl checks, as has been the pattern throughout.
