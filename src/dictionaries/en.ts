@@ -77,6 +77,7 @@ export const en: Dictionary = {
     regionLabelPrefix: "Region",
     regionDeleteLabel: "Delete",
     regionRenameLabel: "Rename",
+    regionUnmergeLabel: "Unmerge",
     borderCheckboxLabel: "Add a border",
     categoryFacade: "Facade",
     categoryTrim: "Trims",

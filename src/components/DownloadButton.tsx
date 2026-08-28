@@ -24,11 +24,12 @@ export function DownloadButton({
   return (
     <button
       type="button"
+      title={dict.studio.downloadButtonLabel}
+      aria-label={dict.studio.downloadButtonLabel}
       onClick={handleDownload}
-      className="flex w-full items-center justify-center gap-3 bg-graphite px-5 py-4 font-display text-sm font-bold uppercase tracking-[0.08em] text-chalk transition-colors hover:bg-skylight"
+      className="flex h-9 w-9 items-center justify-center border border-transparent text-lg text-graphite/60 hover:border-hairline-strong"
     >
-      {dict.studio.downloadButtonLabel}
-      <span aria-hidden="true">↓</span>
+      ↓
     </button>
   );
 }

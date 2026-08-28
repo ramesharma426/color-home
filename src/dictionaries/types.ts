@@ -67,6 +67,7 @@ export interface Dictionary {
     regionLabelPrefix: string;
     regionDeleteLabel: string;
     regionRenameLabel: string;
+    regionUnmergeLabel: string;
     borderCheckboxLabel: string;
     categoryFacade: string;
     categoryTrim: string;

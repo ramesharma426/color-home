@@ -9,12 +9,21 @@ import type { PixelBuffer, RGBColor } from "@/lib/canvas/types";
 import { RegionList } from "./RegionList";
 import { PaletteBrowser } from "./PaletteBrowser";
 import { CatalogueBrowser } from "./CatalogueBrowser";
-import { DownloadButton } from "./DownloadButton";
 import { getDictionary } from "@/lib/dictionary";
 import type { Locale } from "@/dictionaries/types";
 import { SelectionToolbar, type SelectionTool } from "./SelectionToolbar";
 import { polygonToMask, type Point } from "@/lib/canvas/polygonMask";
 import { paintBrushStroke } from "@/lib/canvas/brushMask";
+
+export interface RegionLayer {
+  id: string;
+  label: string;
+  color: RGBColor | null;
+  mask: Uint8Array;
+  recoloredData?: Uint8ClampedArray;
+  borderColor?: RGBColor | null;
+  borderRecoloredData?: Uint8ClampedArray;
+}
 
 export interface Region {
   id: string;
@@ -24,6 +33,10 @@ export interface Region {
   recoloredData?: Uint8ClampedArray;
   borderColor?: RGBColor | null;
   borderRecoloredData?: Uint8ClampedArray;
+  // Regions merged into this one via drag-and-drop (handleMergeRegions).
+  // Each layer keeps its own mask/color/border rather than being flattened
+  // into the base — see the compositeLayer comment in render().
+  mergedLayers?: RegionLayer[];
 }
 
 const DEFAULT_TOLERANCE = 24;
@@ -146,7 +159,10 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
   // Escape discards an in-progress Polygonal Lasso or click-placed Lasso
   // vertex chain without committing a region. Backspace undoes only the
   // most recently placed vertex, so a misplaced point doesn't force
-  // restarting the whole shape.
+  // restarting the whole shape. With no in-progress polygon to cancel,
+  // Escape instead deselects the active region — the canvas/keyboard
+  // equivalent of clicking an already-active row in the region list (its
+  // only other deselect path, RegionList.tsx's isActive-toggle button).
   useEffect(() => {
     function isTypingTarget(target: EventTarget | null) {
       const tag = (target as HTMLElement | null)?.tagName;
@@ -154,8 +170,12 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     }
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      polygonPointsRef.current = [];
-      setPolygonPreview([]);
+      if (polygonPointsRef.current.length > 0) {
+        polygonPointsRef.current = [];
+        setPolygonPreview([]);
+        return;
+      }
+      setActiveRegionId(null);
     }
     function handleBackspace(event: KeyboardEvent) {
       if (event.key !== "Backspace" || isTypingTarget(event.target)) return;
@@ -184,30 +204,52 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     // do NOT replace the whole buffer with the last region's recoloredData,
     // that would discard every earlier region.
     const composed = new Uint8ClampedArray(baseBuffer.data);
-    for (const region of regions) {
-      if (!region.recoloredData) continue;
-      for (let pixelIndex = 0; pixelIndex < region.mask.length; pixelIndex++) {
-        if (!region.mask[pixelIndex]) continue;
-        const offset = pixelIndex * 4;
-        composed[offset] = region.recoloredData[offset];
-        composed[offset + 1] = region.recoloredData[offset + 1];
-        composed[offset + 2] = region.recoloredData[offset + 2];
-        composed[offset + 3] = region.recoloredData[offset + 3];
+    const { width: bufferWidth, height: bufferHeight } = baseBuffer;
+
+    // Shared by a region's own (base) layer and any mergedLayers it has
+    // absorbed — see handleMergeRegions. A merged-in layer keeps its own
+    // mask/color/border entirely separate from the base rather than being
+    // flattened into one mask+color, so composing it is identical to
+    // composing a plain region.
+    function compositeLayer(layer: {
+      mask: Uint8Array;
+      recoloredData?: Uint8ClampedArray;
+      borderRecoloredData?: Uint8ClampedArray;
+    }) {
+      if (layer.recoloredData) {
+        for (let pixelIndex = 0; pixelIndex < layer.mask.length; pixelIndex++) {
+          if (!layer.mask[pixelIndex]) continue;
+          const offset = pixelIndex * 4;
+          composed[offset] = layer.recoloredData[offset];
+          composed[offset + 1] = layer.recoloredData[offset + 1];
+          composed[offset + 2] = layer.recoloredData[offset + 2];
+          composed[offset + 3] = layer.recoloredData[offset + 3];
+        }
       }
 
-      // Border pass: recomputed here rather than cached on the region since
-      // it's a cheap boolean-array pass (no HSL math). Runs after this
-      // region's own fill pass above so the border wins at the edge, while
-      // region-to-region order is unchanged from before.
-      if (!region.borderRecoloredData) continue;
-      const borderMask = computeBorderMask(region.mask, baseBuffer.width, baseBuffer.height, BORDER_THICKNESS);
+      // Border pass: recomputed here rather than cached since it's a cheap
+      // boolean-array pass (no HSL math). Runs after the fill pass above so
+      // the border wins at the edge.
+      if (!layer.borderRecoloredData) return;
+      const borderMask = computeBorderMask(layer.mask, bufferWidth, bufferHeight, BORDER_THICKNESS);
       for (let pixelIndex = 0; pixelIndex < borderMask.length; pixelIndex++) {
         if (!borderMask[pixelIndex]) continue;
         const offset = pixelIndex * 4;
-        composed[offset] = region.borderRecoloredData[offset];
-        composed[offset + 1] = region.borderRecoloredData[offset + 1];
-        composed[offset + 2] = region.borderRecoloredData[offset + 2];
-        composed[offset + 3] = region.borderRecoloredData[offset + 3];
+        composed[offset] = layer.borderRecoloredData[offset];
+        composed[offset + 1] = layer.borderRecoloredData[offset + 1];
+        composed[offset + 2] = layer.borderRecoloredData[offset + 2];
+        composed[offset + 3] = layer.borderRecoloredData[offset + 3];
+      }
+    }
+
+    for (const region of regions) {
+      compositeLayer(region);
+      // Merged-in layers composite after the base so a dropped-in region's
+      // own color wins on any pixels it shares with the base or an earlier
+      // merged layer, per the owner's explicit "dragged region takes
+      // precedence" call — region-to-region order is unchanged from before.
+      for (const layer of region.mergedLayers ?? []) {
+        compositeLayer(layer);
       }
     }
     ctx.putImageData(new ImageData(composed, baseBuffer.width, baseBuffer.height), 0, 0);
@@ -596,6 +638,70 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
     if (activeRegionId === id) setActiveRegionId(null);
   }
 
+  // Dropping sourceId onto targetId merges them into one region-list row.
+  // The two masks/colors are kept entirely separate (not OR'd into one mask
+  // recolored with one color) so each side's existing paint job survives —
+  // sourceId becomes a mergedLayer on targetId, composited after targetId's
+  // own layer (and after any earlier merged layers) so it wins on any
+  // overlapping pixels, per the owner's explicit call. This also makes
+  // unmerge lossless: nothing was ever combined at the pixel level.
+  function handleMergeRegions(sourceId: string, targetId: string) {
+    if (sourceId === targetId) return;
+    setRegions((prev) => {
+      const source = prev.find((r) => r.id === sourceId);
+      const target = prev.find((r) => r.id === targetId);
+      if (!source || !target) return prev;
+
+      const sourceLayer: RegionLayer = {
+        id: source.id,
+        label: source.label,
+        color: source.color,
+        mask: source.mask,
+        recoloredData: source.recoloredData,
+        borderColor: source.borderColor,
+        borderRecoloredData: source.borderRecoloredData,
+      };
+      // Merging a region that's already absorbed layers of its own flattens
+      // them onto the target in their existing relative order, rather than
+      // nesting a group inside a group.
+      const incomingLayers = [...(source.mergedLayers ?? []), sourceLayer];
+
+      return prev
+        .filter((r) => r.id !== sourceId)
+        .map((r) =>
+          r.id === targetId ? { ...r, mergedLayers: [...(r.mergedLayers ?? []), ...incomingLayers] } : r
+        );
+    });
+    if (activeRegionId === sourceId) setActiveRegionId(targetId);
+  }
+
+  // LIFO unmerge: pops the most recently merged-in layer off a region and
+  // reinstates it as its own independent top-level region, with its
+  // original id/label/color/mask restored exactly — see handleMergeRegions.
+  function handleUnmergeLastLayer(targetId: string) {
+    setRegions((prev) => {
+      const target = prev.find((r) => r.id === targetId);
+      const layers = target?.mergedLayers;
+      if (!target || !layers || layers.length === 0) return prev;
+
+      const restoredLayer = layers[layers.length - 1];
+      const remainingLayers = layers.slice(0, -1);
+      const restoredRegion: Region = {
+        id: restoredLayer.id,
+        label: restoredLayer.label,
+        color: restoredLayer.color,
+        mask: restoredLayer.mask,
+        recoloredData: restoredLayer.recoloredData,
+        borderColor: restoredLayer.borderColor,
+        borderRecoloredData: restoredLayer.borderRecoloredData,
+      };
+
+      return prev
+        .map((r) => (r.id === targetId ? { ...r, mergedLayers: remainingLayers } : r))
+        .concat(restoredRegion);
+    });
+  }
+
   function handleRenameRegion(id: string, label: string) {
     setRegions((prev) => prev.map((r) => (r.id === id ? { ...r, label } : r)));
   }
@@ -638,6 +744,11 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
         r.id === activeRegionId ? { ...r, borderColor: color, borderRecoloredData: recoloredBuffer.data } : r
       )
     );
+  }
+
+  function handleToggleBorder(checked: boolean) {
+    setBorderPickerOpen(checked);
+    if (!checked) handleBorderColorSelect(null);
   }
 
   useEffect(render, [regions]);
@@ -790,7 +901,7 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
 
   return (
     <div className="space-y-8">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-8">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_16rem] lg:gap-8">
         <div className="self-start border border-hairline-strong/60 bg-chalk p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-1">
             <p className="label-mono text-skylight">{dict.studio.canvasStepLabel}</p>
@@ -851,7 +962,6 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
             </label>
           </div>
           <div className="flex gap-3">
-            <SelectionToolbar activeTool={activeTool} onSelectTool={setActiveTool} locale={locale} />
             <div
               ref={wrapperRef}
               className="relative flex-1 overflow-auto border border-hairline"
@@ -902,6 +1012,15 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
                 className="pointer-events-none absolute left-0 top-0"
               />
             </div>
+            <SelectionToolbar
+              activeTool={activeTool}
+              onSelectTool={setActiveTool}
+              locale={locale}
+              borderCheckboxVisible={Boolean(activeRegionId)}
+              borderEnabled={borderPickerOpen}
+              onToggleBorder={handleToggleBorder}
+              canvasRef={canvasRef}
+            />
           </div>
         </div>
         <aside className="space-y-8">
@@ -915,34 +1034,19 @@ export function ColorStudio({ photo, locale }: { photo: ImageBitmap; locale: Loc
               onSelectRegion={setActiveRegionId}
               onDeleteRegion={handleDeleteRegion}
               onRenameRegion={handleRenameRegion}
+              onMergeRegions={handleMergeRegions}
+              onUnmergeLastLayer={handleUnmergeLastLayer}
               locale={locale}
             />
           </section>
-          <section>
-            <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
-              {dict.studio.colorStepLabel}
-            </h2>
-            <PaletteBrowser onSelect={handleColorSelect} disabled={!activeRegionId} locale={locale} />
-            {activeRegionId && (
-              <div className="mt-4 space-y-2 border-t border-hairline-strong/60 pt-4">
-                <label className="flex items-center gap-3 text-sm text-graphite/70">
-                  <input
-                    type="checkbox"
-                    checked={borderPickerOpen}
-                    onChange={(event) => {
-                      setBorderPickerOpen(event.target.checked);
-                      if (!event.target.checked) handleBorderColorSelect(null);
-                    }}
-                  />
-                  <span>{dict.studio.borderCheckboxLabel}</span>
-                </label>
-                {borderPickerOpen && (
-                  <PaletteBrowser onSelect={handleBorderColorSelect} locale={locale} />
-                )}
-              </div>
-            )}
-          </section>
-          <DownloadButton canvasRef={canvasRef} locale={locale} />
+          {activeRegionId && borderPickerOpen && (
+            <section>
+              <h2 className="label-mono mb-3 border-b border-hairline-strong/60 pb-2 text-graphite/70">
+                {dict.studio.colorStepLabel}
+              </h2>
+              <PaletteBrowser onSelect={handleBorderColorSelect} locale={locale} />
+            </section>
+          )}
         </aside>
       </div>
       <section>

@@ -13,6 +13,8 @@ export function RegionList({
   onSelectRegion,
   onDeleteRegion,
   onRenameRegion,
+  onMergeRegions,
+  onUnmergeLastLayer,
   locale,
 }: {
   regions: Region[];
@@ -20,12 +22,16 @@ export function RegionList({
   onSelectRegion: (id: string | null) => void;
   onDeleteRegion: (id: string) => void;
   onRenameRegion: (id: string, label: string) => void;
+  onMergeRegions: (sourceId: string, targetId: string) => void;
+  onUnmergeLastLayer: (targetId: string) => void;
   locale: Locale;
 }) {
   const dict = getDictionary(locale);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState("");
   const suppressBlurRef = useRef(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   if (regions.length === 0) {
     return (
@@ -48,14 +54,41 @@ export function RegionList({
         const hex = region.color ? rgbToHex(region.color) : null;
         const isEditing = editingId === region.id;
 
+        const mergedLayers = region.mergedLayers ?? [];
+        const isDropTarget = dropTargetId === region.id;
+
         return (
           <li key={region.id}>
             <div
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                setDraggingId(region.id);
+              }}
+              onDragEnd={() => {
+                setDraggingId(null);
+                setDropTargetId(null);
+              }}
+              onDragOver={(event) => {
+                if (!draggingId || draggingId === region.id) return;
+                event.preventDefault(); // required to allow a drop
+                event.dataTransfer.dropEffect = "move";
+                setDropTargetId(region.id);
+              }}
+              onDragLeave={() => {
+                setDropTargetId((current) => (current === region.id ? null : current));
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDropTargetId(null);
+                if (draggingId && draggingId !== region.id) onMergeRegions(draggingId, region.id);
+                setDraggingId(null);
+              }}
               className={`flex w-full items-center gap-3 border px-3 py-2.5 transition-colors ${
                 isActive
                   ? "border-skylight bg-chalk shadow-[inset_3px_0_0_0_#3b5578]"
                   : "border-hairline-strong/60 bg-chalk/60 hover:border-graphite/40"
-              }`}
+              } ${isDropTarget ? "border-signal bg-signal/5" : ""} ${draggingId === region.id ? "opacity-40" : ""}`}
             >
               <button
                 type="button"
@@ -134,6 +167,43 @@ export function RegionList({
                 ✕
               </button>
             </div>
+            {mergedLayers.length > 0 && (
+              <ul className="ml-4 mt-1 space-y-1 border-l border-hairline-strong/60 pl-3">
+                {mergedLayers.map((layer, index) => {
+                  const layerHex = layer.color ? rgbToHex(layer.color) : null;
+                  const isLast = index === mergedLayers.length - 1;
+                  return (
+                    <li key={layer.id} className="flex items-center gap-2 py-0.5">
+                      <span className="h-5 w-7 shrink-0 overflow-hidden border border-graphite/15">
+                        {layerHex ? (
+                          <SwatchRamp hex={layerHex} steps={2} className="h-full" />
+                        ) : (
+                          <span
+                            className="block h-full w-full"
+                            style={{
+                              backgroundImage:
+                                "repeating-linear-gradient(45deg, #dcdcdc 0 4px, #f7f7f7 4px 8px)",
+                            }}
+                          />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-graphite/70">{layer.label}</span>
+                      {isLast && (
+                        <button
+                          type="button"
+                          title={dict.studio.regionUnmergeLabel}
+                          aria-label={dict.studio.regionUnmergeLabel}
+                          onClick={() => onUnmergeLastLayer(region.id)}
+                          className="shrink-0 px-1 text-xs text-graphite/50 hover:text-graphite"
+                        >
+                          ↩
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </li>
         );
       })}

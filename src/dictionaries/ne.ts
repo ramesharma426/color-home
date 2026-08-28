@@ -76,6 +76,7 @@ export const ne: Dictionary = {
     regionLabelPrefix: "क्षेत्र",
     regionDeleteLabel: "मेटाउनुहोस्",
     regionRenameLabel: "नाम बदल्नुहोस्",
+    regionUnmergeLabel: "छुट्याउनुहोस्",
     borderCheckboxLabel: "किनारा थप्नुहोस्",
     categoryFacade: "फेसाड",
     categoryTrim: "ट्रिम",

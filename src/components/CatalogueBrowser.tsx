@@ -31,7 +31,10 @@ export function CatalogueBrowser({
   disabled?: boolean;
 } = {}) {
   const [brandId, setBrandId] = useState<PaintBrand>("berger");
-  const [category, setCategory] = useState<string | null>(null);
+  // A brand is always selected, and so is its first color family — landing
+  // on an empty "pick something" prompt would make browsing take an extra
+  // click for no reason.
+  const [category, setCategory] = useState<string | null>(BRANDS[0].categories[0] ?? null);
   const [search, setSearch] = useState("");
 
   const brand = BRANDS.find((b) => b.id === brandId)!;
@@ -51,7 +54,8 @@ export function CatalogueBrowser({
 
   function handleBrandChange(next: PaintBrand) {
     setBrandId(next);
-    setCategory(null);
+    const nextBrand = BRANDS.find((b) => b.id === next)!;
+    setCategory(nextBrand.categories[0] ?? null);
     setSearch("");
   }
 
@@ -76,17 +80,6 @@ export function CatalogueBrowser({
         ))}
       </div>
 
-      <input
-        type="search"
-        value={search}
-        onChange={(event) => {
-          setSearch(event.target.value);
-          setCategory(null);
-        }}
-        placeholder={`Search ${brand.label} colors by name or code…`}
-        className="mb-6 w-full rounded-lg border border-hairline-strong bg-chalk px-4 py-2 text-sm text-graphite placeholder:text-graphite/50 focus:border-skylight focus:outline-none"
-      />
-
       {!search && (
         <div className="mb-6 flex flex-wrap gap-2">
           {brand.categories.map((cat) => (
@@ -105,6 +98,21 @@ export function CatalogueBrowser({
           ))}
         </div>
       )}
+
+      <input
+        type="search"
+        value={search}
+        onChange={(event) => {
+          const value = event.target.value;
+          setSearch(value);
+          // Clearing the search box should land back on the first family,
+          // not the same empty "pick something" prompt this default exists
+          // to avoid in the first place.
+          setCategory(value ? null : brand.categories[0] ?? null);
+        }}
+        placeholder={`Search ${brand.label} colors by name or code…`}
+        className="mb-6 w-full rounded-lg border border-hairline-strong bg-chalk px-4 py-2 text-sm text-graphite placeholder:text-graphite/50 focus:border-skylight focus:outline-none"
+      />
 
       {results.length === 0 ? (
         <p className="text-sm text-graphite/60">
